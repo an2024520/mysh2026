@@ -4,7 +4,7 @@ set -euo pipefail
 # ======================================================
 # install-argo.sh
 # Cloudflare Tunnel 多域名自动安装脚本 (支持 WS/gRPC/TCP)
-# 拷贝from作者：数字套利 by AM 
+# 作者：数字套利 by AM 
 # ======================================================
 
 die(){ echo "✖ $*" >&2; exit 1; }
@@ -28,10 +28,14 @@ re='\033[0m'
 clear
 echo -e "${cyan}"
 echo "╔══════════════════════════════════════════╗"
-echo "║   🚀  Cloudflare Argo 安装器        ║"
+echo "║   🚀 数字套利 Cloudflare Argo 安装器        ║"
 echo "╚══════════════════════════════════════════╝"
 echo -e "${re}"
 
+printf "go"
+printf "go"
+printf "go"
+printf "go"
 
 echo -e "${cyan}──────────────────────────────────────────${re}"
 
