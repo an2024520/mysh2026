@@ -6,7 +6,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 PLAIN='\033[0m'
 
-echo -e "${GREEN}>>> 开始1部署 Xray 最新版 (v25.12.8+ 适配版)...${PLAIN}"
+echo -e "${GREEN}>>> 开始部署 Xray 最新版 (v25.12.8+ 适配版)...${PLAIN}"
 
 # 1. 检查 Root
 if [[ $EUID -ne 0 ]]; then
