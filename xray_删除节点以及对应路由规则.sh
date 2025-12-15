@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  模块四 (v4.0)：批量智能拆除工具 (支持 手动批量 / 一键清空)
+#  模块四 (v4.2 兼容版)：批量智能拆除工具
 # ============================================================
 
 # 颜色定义
@@ -10,13 +10,12 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
-GRAY='\033[0;37m'
 
 # 核心路径
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
 
-echo -e "${RED}>>> [模块四] 智能节点拆除工具 (Node Destroyer v4.0)...${PLAIN}"
+echo -e "${RED}>>> [模块四] 智能节点拆除工具 (v4.2 兼容版)...${PLAIN}"
 
 # 1. 检查配置文件
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -43,11 +42,18 @@ fi
 # 定义数组存储所有存在的端口
 declare -a ALL_EXISTING_PORTS
 
-# 使用 process substitution <(...) 确保数组在循环外有效
+# === 修复点：使用临时文件替代进程替换，解决语法错误 ===
+TMP_NODE_LIST=$(mktemp)
+jq -r '.inbounds[] | "\(.tag) \(.port) \(.protocol)"' "$CONFIG_FILE" > "$TMP_NODE_LIST"
+
 while read -r tag port proto; do
     printf "${SKYBLUE}%-25s${PLAIN} ${GREEN}%-10s${PLAIN} %-15s\n" "$tag" "$port" "$proto"
     ALL_EXISTING_PORTS+=("$port")
-done < <(jq -r '.inbounds[] | "\(.tag) \(.port) \(.protocol)"' "$CONFIG_FILE")
+done < "$TMP_NODE_LIST"
+
+# 删除临时文件
+rm -f "$TMP_NODE_LIST"
+# =======================================================
 
 echo -e "----------------------------------------------------"
 
@@ -55,8 +61,8 @@ echo -e "----------------------------------------------------"
 # -----------------------------------------------------------
 echo -e "${YELLOW}请选择删除模式:${PLAIN}"
 echo -e "  1. ${GREEN}手动输入${PLAIN} (删除特定端口，支持批量)"
-echo -e "  2. ${RED}全部删除${PLAIN} (清空列表中的 ${NODE_COUNT} 个节点，回归初始状态)"
-read -p "请选择 [1-2]: " MODE_CHOICE
+echo -e "  2. ${RED}全部删除${PLAIN} (清空列表中的 ${NODE_COUNT} 个节点)"
+read -p "请选择 [1-2] (默认 1): " MODE_CHOICE
 
 declare -a TARGET_PORTS_ARRAY
 
@@ -100,7 +106,7 @@ for TARGET_PORT in "${TARGET_PORTS_ARRAY[@]}"; do
         continue
     fi
 
-    # 4.2 查找 Tag (必须先找 Tag 才能删路由)
+    # 4.2 查找 Tag
     TARGET_TAG=$(jq -r --argjson p "$TARGET_PORT" '.inbounds[] | select(.port == $p) | .tag' "$CONFIG_FILE")
 
     if [[ -z "$TARGET_TAG" ]] || [[ "$TARGET_TAG" == "null" ]]; then
@@ -111,13 +117,12 @@ for TARGET_PORT in "${TARGET_PORTS_ARRAY[@]}"; do
     echo -e "----------------------------------------"
     echo -e "正在处理: ${SKYBLUE}$TARGET_TAG${PLAIN} (${GREEN}$TARGET_PORT${PLAIN})"
 
-    # 4.3 删除 inbound 节点 (物理删除)
+    # 4.3 删除 inbound 节点
     tmp1=$(mktemp)
     jq --argjson p "$TARGET_PORT" '.inbounds |= map(select(.port != $p))' "$CONFIG_FILE" > "$tmp1" && mv "$tmp1" "$CONFIG_FILE"
     echo -e "  -> 节点配置已移除。"
 
-    # 4.4 删除相关的 routing 规则 (级联清理)
-    # 逻辑: 只要路由规则的 inboundTag 里包含这个 tag，就整条删掉
+    # 4.4 删除相关的 routing 规则
     tmp2=$(mktemp)
     jq --arg tag "$TARGET_TAG" '.routing.rules |= map(select(.inboundTag | index($tag) | not))' "$CONFIG_FILE" > "$tmp2" && mv "$tmp2" "$CONFIG_FILE"
     echo -e "  -> 关联路由规则已清理。"
