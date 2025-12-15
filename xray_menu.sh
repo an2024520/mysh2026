@@ -32,7 +32,6 @@ check_run() {
         echo -e "${RED}错误: 找不到脚本文件 [$1]${PLAIN}"
         echo -e "请确保所有模块脚本都在当前目录下。"
         echo -e "开始下载所有所需脚本。"
-        sleep 10
         wget -O xray_core.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/%E5%9C%B0%E5%9F%BA_xray_core
         wget -O xray_vless_xhttp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray%E6%A8%A1%E5%9D%97_vless%2Bxhttp%2Breality.sh
         wget -O xray_vless_vision.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray%E6%A8%A1%E5%9D%97_vless_tcp_reality_Vision
