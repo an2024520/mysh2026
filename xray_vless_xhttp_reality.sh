@@ -6,7 +6,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 PLAIN='\033[0m'
 
-echo -e "${GREEN}>>> 开始部署 Xray (日本 VPS 优化版 - Amazon JP)...${PLAIN}"
+echo -e "${GREEN}>>> 开始部署 Xray (日本 VPS 逻辑闭环版)...${PLAIN}"
 
 # 1. 检查 Root
 if [[ $EUID -ne 0 ]]; then
@@ -40,30 +40,34 @@ done
 
 echo "------------------------------------------"
 
-# --- 2. 设置伪装域名 (SNI) - 日本专供版 ---
-echo -e "${YELLOW}提示: 针对日本 VPS，推荐使用以下域名 (已验证国内可访问性):${PLAIN}"
-echo -e "  1. www.amazon.co.jp (日本亚马逊 - 首选，最稳)"
-echo -e "  2. www.nintendo.co.jp (任天堂 - 适合 UDP 游戏流量)"
-echo -e "  3. www.microsoft.com (微软 - 全球通用保底)"
+# --- 2. 设置伪装域名 (SNI) - 逻辑严密版 ---
+echo -e "${YELLOW}提示: 为避免 IP 归属地逻辑矛盾，已精选以下适合 [中国->日本] 的伪装域名:${PLAIN}"
+echo -e "  1. www.sony.jp (索尼日本 - 逻辑完美，访问日本官网天经地义)"
+echo -e "  2. www.nintendo.co.jp (任天堂 - 模拟游戏机待机流量，非常安全)"
+echo -e "  3. updates.cdn-apple.com (苹果CDN - 更新服务器经常会有跨国流量)"
+echo -e "  4. www.microsoft.com (微软 - 技术最稳，虽然逻辑稍逊但大厂光环重)"
 
-read -p "请输入伪装域名 (默认 www.amazon.co.jp): " CUSTOM_SNI
+read -p "请输入选项 [1-4] (默认 1. 索尼): " SNI_CHOICE
 
-if [[ -z "$CUSTOM_SNI" ]]; then
-    SNI="www.amazon.co.jp"
-else
-    SNI="$CUSTOM_SNI"
-fi
+case $SNI_CHOICE in
+    2) SNI="www.nintendo.co.jp" ;;
+    3) SNI="updates.cdn-apple.com" ;;
+    4) SNI="www.microsoft.com" ;;
+    *) SNI="www.sony.jp" ;;
+esac
 
-# --- 3. 连通性预检 (新增功能) ---
+echo -e "${GREEN}已选择伪装域名: ${SNI}${PLAIN}"
+
+# --- 3. 连通性预检 ---
 echo -e "${YELLOW}正在检查 VPS 访问 $SNI 的连通性...${PLAIN}"
 if curl -s -I --max-time 5 "https://$SNI" >/dev/null; then
-    echo -e "${GREEN}检测通过！你的 VPS 可以顺畅连接到 $SNI。${PLAIN}"
+    echo -e "${GREEN}检测通过！VPS 可以连接到 $SNI。${PLAIN}"
 else
-    echo -e "${RED}警告: 你的 VPS 似乎无法连接到 $SNI (超时或被拒)。${PLAIN}"
-    echo -e "${YELLOW}这可能会导致 Reality 无法工作。是否继续？(y/n)${PLAIN}"
-    read -p "请选择: " CONTINUE
-    if [[ "$CONTINUE" != "y" ]]; then
-        echo "已取消安装。"
+    echo -e "${RED}警告: VPS 无法连接到 $SNI (可能是被阻断或超时)。${PLAIN}"
+    echo -e "${YELLOW}建议更换其他域名。输入 y 更换，输入 n 强制继续。${PLAIN}"
+    read -p "是否更换? (y/n): " RETRY
+    if [[ "$RETRY" == "y" ]]; then
+        echo "请重新运行脚本选择其他域名。"
         exit 1
     fi
 fi
@@ -93,10 +97,6 @@ esac
 
 echo -e "${YELLOW}正在获取最新版本...${PLAIN}"
 LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
-if [[ -z "$LATEST_VERSION" ]] || [[ "$LATEST_VERSION" == "null" ]]; then
-    echo -e "${RED}获取版本失败，请检查网络。${PLAIN}"
-    exit 1
-fi
 
 echo -e "${GREEN}即将安装版本: ${LATEST_VERSION}${PLAIN}"
 DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
@@ -108,16 +108,13 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo -e "${YELLOW}正在解压...${PLAIN}"
 unzip -o /tmp/xray.zip -d /usr/local/bin/xray_core
 rm -f /tmp/xray.zip
 chmod +x /usr/local/bin/xray_core/xray
-
 XRAY_BIN="/usr/local/bin/xray_core/xray"
 
-# 7. 生成密钥 (适配 v25.12.8+)
+# 7. 生成密钥 (v25+ 适配)
 echo -e "${YELLOW}正在生成 Reality 密钥...${PLAIN}"
-
 UUID=$(uuidgen)
 SHORT_ID=$(openssl rand -hex 4)
 XHTTP_PATH="/$(openssl rand -hex 4)"
@@ -125,15 +122,6 @@ XHTTP_PATH="/$(openssl rand -hex 4)"
 RAW_KEYS=$($XRAY_BIN x25519)
 PRIVATE_KEY=$(echo "$RAW_KEYS" | grep "PrivateKey:" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 PUBLIC_KEY=$(echo "$RAW_KEYS" | grep "Password:" | awk -F ":" '{print $2}' | tr -d ' \r\n')
-
-# 调试输出
-echo -e "Private Key: ${PRIVATE_KEY}"
-echo -e "Public Key : ${PUBLIC_KEY}"
-
-if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
-    echo -e "${RED}密钥获取失败！${PLAIN}"
-    exit 1
-fi
 
 # 8. 写入配置文件
 mkdir -p /usr/local/etc/xray
@@ -214,22 +202,20 @@ WantedBy=multi-user.target
 EOF
 
 # 10. 启动
-echo -e "${YELLOW}正在启动服务...${PLAIN}"
 systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
 
-# 11. 结果输出
+# 11. 结果
 PUBLIC_IP=$(curl -s4 ifconfig.me)
 NODE_NAME="Xray-JP-${PUBLIC_IP}"
-
 SHARE_LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&headerType=none&type=xhttp&sni=${SNI}&sid=${SHORT_ID}&path=${XHTTP_PATH}&fp=chrome#${NODE_NAME}"
 
 sleep 2
 if systemctl is-active --quiet xray; then
     echo -e ""
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}   Xray (日本 VPS 优化版) 部署成功     ${PLAIN}"
+    echo -e "${GREEN}   Xray (日本-索尼/任天堂) 部署成功     ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "IP 地址     : ${YELLOW}${PUBLIC_IP}${PLAIN}"
     echo -e "监听端口    : ${YELLOW}${PORT}${PLAIN}"
@@ -238,7 +224,6 @@ if systemctl is-active --quiet xray; then
     echo -e "----------------------------------------"
     echo -e "🚀 [链接]: ${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "⚠️ 防火墙提示: 请确保云服务商安全组已放行 UDP/TCP ${PORT} 端口"
 else
     echo -e "${RED}启动失败！请检查日志: journalctl -u xray -e${PLAIN}"
 fi
