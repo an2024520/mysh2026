@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  模块四：节点信息读取 (调试修复版)
+#  模块四：节点信息读取 (v3.0 适配修复版)
 # ============================================================
 
 RED='\033[0;31m'
@@ -11,36 +11,19 @@ CYAN='\033[0;36m'
 PLAIN='\033[0m'
 
 CONFIG_FILE="/usr/local/etc/xray/config.json"
-# 确保这里是你的 Xray 真实路径
 XRAY_BIN="/usr/local/bin/xray_core/xray"
 
-echo -e "${YELLOW}>>> 正在进行自检...${PLAIN}"
-
-# 1. 检查 Xray 核心能不能运行
-if [[ ! -f "$XRAY_BIN" ]]; then
-    echo -e "${RED}[错误] 找不到 Xray 文件: $XRAY_BIN ${PLAIN}"
-    echo -e "尝试自动搜索 xray..."
-    XRAY_BIN=$(which xray)
-    if [[ -z "$XRAY_BIN" ]]; then
-        echo -e "${RED}[致命错误] 系统里没找到 xray 命令！无法计算公钥。${PLAIN}"
-        exit 1
-    fi
-    echo -e "${GREEN}[成功] 找到 xray: $XRAY_BIN${PLAIN}"
-else
-    echo -e "${GREEN}[成功] Xray 路径正常: $XRAY_BIN${PLAIN}"
-fi
-
-# 2. 检查配置文件
+# 1. 环境检查
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${RED}[错误] 找不到配置文件: $CONFIG_FILE${PLAIN}"
     exit 1
 fi
 
-echo -e "${YELLOW}>>> 开始提取节点...${PLAIN}"
-
+echo -e "${YELLOW}>>> 正在生成节点链接...${PLAIN}"
 PUBLIC_IP=$(curl -s4 ifconfig.me)
-[[ -z "$PUBLIC_IP" ]] && PUBLIC_IP="[你的IP]"
+[[ -z "$PUBLIC_IP" ]] && PUBLIC_IP="[你的服务器IP]"
 
+# 2. 遍历节点
 for row in $(jq -r '.inbounds[] | @base64' "$CONFIG_FILE"); do
     _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
 
@@ -53,33 +36,25 @@ for row in $(jq -r '.inbounds[] | @base64' "$CONFIG_FILE"); do
         NETWORK=$(_jq '.streamSettings.network')
         SECURITY=$(_jq '.streamSettings.security')
         
-        echo -e "\n${CYAN}---------- 正在分析节点: $TAG ----------${PLAIN}"
-
+        # 只处理 Reality 节点
         if [[ "$SECURITY" == "reality" ]]; then
-            # 1. 读取私钥
             PRIVATE_KEY=$(_jq '.streamSettings.realitySettings.privateKey')
-            echo -e "读取到的私钥 (前5位): ${GREEN}${PRIVATE_KEY:0:5}***${PLAIN}"
-
-            # 2. 暴力尝试计算公钥 (显示原始输出)
-            echo -e "正在尝试反推公钥..."
             
-            # 方法A: 标准路径计算
+            # --- 核心修复：公钥反推逻辑 ---
+            # 1. 获取 Xray 原始输出
             RAW_OUTPUT=$($XRAY_BIN x25519 -i "$PRIVATE_KEY" 2>&1)
             
-            # 调试：打印原始输出，看看到底算出来没
-            # echo -e "Xray内核返回原始信息: $RAW_OUTPUT" 
-
-            # 提取公钥 (尝试多种匹配模式)
-            # 匹配 "Public key: XXXXX" 或 "Public: XXXXX"
+            # 2. 尝试抓取 "Public" (标准版)
             PUBLIC_KEY=$(echo "$RAW_OUTPUT" | grep -i "Public" | awk -F ": " '{print $2}' | tr -d ' \r\n')
-
+            
+            # 3. 如果没抓到，尝试抓取 "Password" (特殊版本适配)
             if [[ -z "$PUBLIC_KEY" ]]; then
-                 echo -e "${RED}[失败] 公钥计算结果为空！${PLAIN}"
-                 echo -e "${YELLOW}可能原因: 私钥格式错误 或 Xray版本不支持此命令。${PLAIN}"
-                 echo -e "Xray返回的错误信息: ${RED}$RAW_OUTPUT${PLAIN}"
-                 PUBLIC_KEY="<公钥计算失败>"
-            else
-                 echo -e "${GREEN}[成功] 反推公钥: $PUBLIC_KEY${PLAIN}"
+                PUBLIC_KEY=$(echo "$RAW_OUTPUT" | grep -i "Password" | awk -F ": " '{print $2}' | tr -d ' \r\n')
+            fi
+            
+            # 4. 如果还是空，显示错误
+            if [[ -z "$PUBLIC_KEY" ]]; then
+                 PUBLIC_KEY="[计算失败_请手动检查]"
             fi
             
             # 获取其他参数
@@ -87,35 +62,65 @@ for row in $(jq -r '.inbounds[] | @base64' "$CONFIG_FILE"); do
             SHORT_ID=$(_jq '.streamSettings.realitySettings.shortIds[0]')
             [[ "$SHORT_ID" == "null" ]] && SHORT_ID=""
 
-            # --- 生成 OpenClash 配置 ---
-            echo -e "${YELLOW}➤ OpenClash 配置片段:${PLAIN}"
-            echo -e "  - name: \"${TAG}\""
-            echo -e "    type: vless"
-            echo -e "    server: ${PUBLIC_IP}"
-            echo -e "    port: ${PORT}"
-            echo -e "    uuid: ${UUID}"
-            echo -e "    network: ${NETWORK}"
-            echo -e "    tls: true"
-            echo -e "    udp: true"
+            # --- 输出结果 ---
+            echo -e "${CYAN}--------------------------------------------------${PLAIN}"
+            echo -e "节点名称: ${YELLOW}${TAG}${PLAIN} | 协议: ${GREEN}${NETWORK}${PLAIN}"
+            
+            # -----------------------------------------------------
+            # 场景 A: Vision (TCP)
+            # -----------------------------------------------------
             if [[ "$NETWORK" == "tcp" ]]; then
+                LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${SNI}&sid=${SHORT_ID}#${TAG}-Vision"
+                
+                echo -e "${YELLOW}➤ OpenClash 配置 (Vision):${PLAIN}"
+                echo -e "  - name: \"${TAG}-Vision\""
+                echo -e "    type: vless"
+                echo -e "    server: ${PUBLIC_IP}"
+                echo -e "    port: ${PORT}"
+                echo -e "    uuid: ${UUID}"
+                echo -e "    network: tcp"
+                echo -e "    tls: true"
+                echo -e "    udp: true"
                 echo -e "    flow: xtls-rprx-vision"
-            else
-                echo -e "    # flow: (非tcp协议不填flow)"
-            fi
-            echo -e "    servername: ${SNI}"
-            echo -e "    client-fingerprint: chrome"
-            echo -e "    reality-opts:"
-            echo -e "      public-key: ${PUBLIC_KEY}"
-            echo -e "      short-id: ${SHORT_ID}"
-            if [[ "$NETWORK" == "xhttp" ]]; then
+                echo -e "    servername: ${SNI}"
+                echo -e "    client-fingerprint: chrome"
+                echo -e "    reality-opts:"
+                echo -e "      public-key: ${PUBLIC_KEY}"
+                echo -e "      short-id: ${SHORT_ID}"
+                
+                echo -e "\n${YELLOW}➤ 分享链接 (v2rayN):${PLAIN}"
+                echo -e "${LINK}"
+
+            # -----------------------------------------------------
+            # 场景 B: XHTTP
+            # -----------------------------------------------------
+            elif [[ "$NETWORK" == "xhttp" ]]; then
                 PATH_VAL=$(_jq '.streamSettings.xhttpSettings.path')
+                LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&fp=chrome&type=xhttp&path=${PATH_VAL}&mode=auto&sni=${SNI}&sid=${SHORT_ID}#${TAG}-XHTTP"
+
+                echo -e "${YELLOW}➤ OpenClash 配置 (XHTTP):${PLAIN}"
+                echo -e "  - name: \"${TAG}-XHTTP\""
+                echo -e "    type: vless"
+                echo -e "    server: ${PUBLIC_IP}"
+                echo -e "    port: ${PORT}"
+                echo -e "    uuid: ${UUID}"
+                echo -e "    network: xhttp"
+                echo -e "    tls: true"
+                echo -e "    udp: true"
+                echo -e "    # flow: 留空"
+                echo -e "    servername: ${SNI}"
+                echo -e "    client-fingerprint: chrome"
+                echo -e "    reality-opts:"
+                echo -e "      public-key: ${PUBLIC_KEY}"
+                echo -e "      short-id: ${SHORT_ID}"
                 echo -e "    xhttp-opts:"
                 echo -e "      mode: auto"
                 echo -e "      path: ${PATH_VAL}"
+
+                echo -e "\n${YELLOW}➤ 分享链接 (v2rayN):${PLAIN}"
+                echo -e "${LINK}"
             fi
-        else
-            echo -e "${YELLOW}跳过: 不是 Reality 节点${PLAIN}"
         fi
     fi
 done
-echo -e "\n${CYAN}----------------------------------------${PLAIN}"
+echo -e "${CYAN}--------------------------------------------------${PLAIN}"
