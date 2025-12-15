@@ -16,7 +16,7 @@ GRAY='\033[0;37m'
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
 
-echo -e "${GREEN}>>> [模块六] 智能分流挂载器 (Smart Router)...${PLAIN}"
+echo -e "${GREEN}>>> [模块六] 智能分流挂载器 (Smart Router v3.0)...${PLAIN}"
 
 # 1. 基础环境检查
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -54,7 +54,7 @@ else
     [[ "$FORCE" != "y" ]] && exit 1
 fi
 
-# 3. 写入出站规则 (如果有新代理配置则写入)
+# 3. 写入出站规则 (Outbound)
 # -----------------------------------------------------------
 PROXY_TAG="custom-socks-out-$PROXY_PORT"
 IS_EXIST=$(jq --arg tag "$PROXY_TAG" '.outbounds[] | select(.tag == $tag)' "$CONFIG_FILE")
@@ -82,10 +82,10 @@ echo -e "----------------------------------------------------"
 # 获取“忙碌”的 Tag 列表 (已经在路由规则里的)
 BUSY_TAGS=$(jq -r '[.routing.rules[] | select(.inboundTag != null) | .inboundTag[]] | join(" ")' "$CONFIG_FILE")
 
-# 定义一个数组，用来存储所有“可用”的端口，方便后面“全选”使用
+# 定义一个数组，用来存储所有“可用”的端口
 declare -a ALL_AVAILABLE_PORTS
 
-# 使用进程替换 <(...) 来避免管道造成的子shell变量丢失问题
+# 使用 <(...) 进程替换，避免 while 循环在子 Shell 中运行导致变量无法保存
 while read -r tag port proto; do
     # 检查当前 tag 是否出现在 BUSY_TAGS 字符串中
     if [[ " $BUSY_TAGS " =~ " $tag " ]]; then
@@ -106,7 +106,7 @@ if [[ "$AVAILABLE_COUNT" == "0" ]]; then
     exit 0
 fi
 
-# 5. 操作模式选择
+# 5. 操作模式选择 (新增功能)
 # -----------------------------------------------------------
 echo -e "${YELLOW}请选择挂载模式:${PLAIN}"
 echo -e "  1. ${GREEN}手动输入${PLAIN} (输入特定端口，支持批量)"
@@ -157,7 +157,7 @@ for TARGET_PORT in "${TARGET_PORTS_ARRAY[@]}"; do
         continue
     fi
 
-    # 二次检查 (防止手动模式下输入了已挂载的端口)
+    # 二次检查
     if [[ " $BUSY_TAGS " =~ " $TARGET_NODE_TAG " ]]; then
         echo -e "${RED}跳过: 节点 $TARGET_NODE_TAG 已经挂载了代理。${PLAIN}"
         continue
