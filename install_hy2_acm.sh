@@ -155,7 +155,7 @@ fi
 PUBLIC_IP=$(curl -s4 ifconfig.me)
 
 # 10. 生成 v2rayN 兼容链接
-SHARE_LINK="hysteria2://${PASSWORD}@${CUSTOM_DOMAIN}:${CUSTOM_PORT}/?sni=${CUSTOM_DOMAIN}&name=Hy2-${CUSTOM_DOMAIN}"
+SHARE_LINK="hysteria2://${PASSWORD}@${CUSTOM_DOMAIN}:${CUSTOM_PORT}/?sni=${CUSTOM_DOMAIN}&alpn=h3&name=Hy2-${CUSTOM_DOMAIN}"
 
 echo -e ""
 echo -e "${GREEN}========================================${PLAIN}"
