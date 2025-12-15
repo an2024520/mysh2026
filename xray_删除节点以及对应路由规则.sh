@@ -43,7 +43,7 @@ fi
 # 定义数组存储所有存在的端口
 declare -a ALL_EXISTING_PORTS
 
-# 使用 <(...) 进程替换，确保数组在 while 循环外依然有效
+# 使用 process substitution <(...) 确保数组在循环外有效
 while read -r tag port proto; do
     printf "${SKYBLUE}%-25s${PLAIN} ${GREEN}%-10s${PLAIN} %-15s\n" "$tag" "$port" "$proto"
     ALL_EXISTING_PORTS+=("$port")
