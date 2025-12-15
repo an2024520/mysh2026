@@ -6,7 +6,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 PLAIN='\033[0m'
 
-echo -e "${GREEN}>>> 开始部署 Xray 最新版 (自定义端口 + 适配 v25.12.8+)...${PLAIN}"
+echo -e "${GREEN}>>> 开始部署 Xray (自定义端口 + 自定义域名 + 适配 v25.12.8+)...${PLAIN}"
 
 # 1. 检查 Root
 if [[ $EUID -ne 0 ]]; then
@@ -14,29 +14,53 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# 2. 用户输入监听端口
-# ----------------------------------------------------
+# ==========================================
+# 用户自定义配置区域
+# ==========================================
+
+# --- 1. 设置监听端口 ---
 while true; do
-    echo -e "${YELLOW}提示: 如果你同时运行 Hysteria 2 (ACME)，请不要使用 443 端口。${PLAIN}"
-    read -p "请输入 Xray 监听端口 (留空默认 443，推荐 2053, 8443 等): " CUSTOM_PORT
+    echo -e "${YELLOW}提示: 建议使用非常规端口 (如 2053, 2083, 8443) 以避开 443 端口占用冲突。${PLAIN}"
+    read -p "请输入 Xray 监听端口 (默认 443): " CUSTOM_PORT
     
-    # 如果用户留空，默认 443
     if [[ -z "$CUSTOM_PORT" ]]; then
         PORT=443
-        echo -e "${YELLOW}已选择默认端口: 443${PLAIN}"
+        echo -e "${GREEN}使用默认端口: 443${PLAIN}"
         break
     fi
 
-    # 检查是否为有效数字
     if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -ge 1 ] && [ "$CUSTOM_PORT" -le 65535 ]; then
         PORT="$CUSTOM_PORT"
         echo -e "${GREEN}端口已设置为: $PORT${PLAIN}"
         break
     else
-        echo -e "${RED}输入无效，请输入 1-65535 之间的数字。${PLAIN}"
+        echo -e "${RED}无效端口，请输入 1-65535。${PLAIN}"
     fi
 done
-# ----------------------------------------------------
+
+echo "------------------------------------------"
+
+# --- 2. 设置伪装域名 (SNI) ---
+echo -e "${YELLOW}提示: 请输入适合你所在地区的伪装域名 (不要带 https://)。${PLAIN}"
+echo -e "推荐列表:"
+echo -e "  - www.microsoft.com (通用)"
+echo -e "  - www.apple.com (苹果服务)"
+echo -e "  - dl.google.com (谷歌下载)"
+echo -e "  - www.amazon.com (亚马逊)"
+echo -e "  - updates.cdn-apple.com (CDN)"
+
+read -p "请输入伪装域名 (默认 www.microsoft.com): " CUSTOM_SNI
+
+if [[ -z "$CUSTOM_SNI" ]]; then
+    SNI="www.microsoft.com"
+else
+    SNI="$CUSTOM_SNI"
+fi
+echo -e "${GREEN}伪装域名已设置为: $SNI${PLAIN}"
+
+# ==========================================
+# 安装流程
+# ==========================================
 
 # 3. 清理旧环境
 echo -e "${YELLOW}正在清理旧版本...${PLAIN}"
@@ -81,19 +105,17 @@ chmod +x /usr/local/bin/xray_core/xray
 
 XRAY_BIN="/usr/local/bin/xray_core/xray"
 
-# 6. 生成密钥 (直接抓取逻辑)
+# 6. 生成密钥 (v25.12.8+ 适配)
 echo -e "${YELLOW}正在生成 Reality 密钥...${PLAIN}"
 
 UUID=$(uuidgen)
 SHORT_ID=$(openssl rand -hex 4)
+XHTTP_PATH="/$(openssl rand -hex 4)"
 
-# 生成原始数据
+# 生成并抓取
 RAW_KEYS=$($XRAY_BIN x25519)
-
-# 提取 PrivateKey
 PRIVATE_KEY=$(echo "$RAW_KEYS" | grep "PrivateKey:" | awk -F ":" '{print $2}' | tr -d ' \r\n')
-
-# 提取 Public Key (在新版中显示为 Password:)
+# 抓取 Password 作为公钥
 PUBLIC_KEY=$(echo "$RAW_KEYS" | grep "Password:" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 
 # 调试输出
@@ -105,15 +127,11 @@ if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
     exit 1
 fi
 
-# 7. 配置参数
-# SNI 依然指向 443，这是伪装目标，和我们监听的端口无关
-SNI="www.microsoft.com"
-XHTTP_PATH="/$(openssl rand -hex 4)"
-
-# 8. 写入配置文件 config.json
+# 7. 写入配置文件 config.json
 mkdir -p /usr/local/etc/xray
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 
+# 注意：dest: "$SNI:443" 表示回落目标的端口，通常目标网站(如微软)都是 443，这里不用改
 cat <<EOF > $CONFIG_FILE
 {
   "log": {
@@ -171,7 +189,7 @@ cat <<EOF > $CONFIG_FILE
 }
 EOF
 
-# 9. 配置 Systemd
+# 8. 配置 Systemd
 cat <<EOF > /etc/systemd/system/xray.service
 [Unit]
 Description=Xray Service
@@ -188,13 +206,13 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# 10. 启动
+# 9. 启动
 echo -e "${YELLOW}正在启动服务...${PLAIN}"
 systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
 
-# 11. 输出结果
+# 10. 输出结果
 PUBLIC_IP=$(curl -s4 ifconfig.me)
 NODE_NAME="Xray-Reality-${PUBLIC_IP}"
 
@@ -205,21 +223,20 @@ sleep 2
 if systemctl is-active --quiet xray; then
     echo -e ""
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}      Xray 最新版 部署成功！           ${PLAIN}"
+    echo -e "${GREEN}      Xray (Reality+XHTTP) 部署成功    ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "IP 地址     : ${YELLOW}${PUBLIC_IP}${PLAIN}"
-    echo -e "监听端口    : ${YELLOW}${PORT}${PLAIN} (请确保防火墙已放行 UDP/TCP)"
+    echo -e "监听端口    : ${YELLOW}${PORT}${PLAIN}"
+    echo -e "伪装域名    : ${YELLOW}${SNI}${PLAIN}"
     echo -e "UUID        : ${YELLOW}${UUID}${PLAIN}"
     echo -e "Reality公钥 : ${YELLOW}${PUBLIC_KEY}${PLAIN}"
-    echo -e "伪装域名    : ${YELLOW}${SNI}${PLAIN}"
     echo -e "XHTTP 路径  : ${YELLOW}${XHTTP_PATH}${PLAIN}"
     echo -e "----------------------------------------"
     echo -e "🚀 [v2rayN / Nekoray 导入链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "⚠️  重要提示:"
-    echo -e "1. 务必在防火墙(安全组)放行端口: **${PORT}** (协议: TCP 和 UDP)。"
-    echo -e "2. 如果你使用 443 以外的端口，Reality 依然会伪装成 www.microsoft.com 的 443 流量。"
+    echo -e "🛡️ 防火墙设置:"
+    echo -e "请务必在云服务器后台(安全组)放行端口: **${PORT}** (TCP + UDP)"
 else
     echo -e "${RED}启动失败！请运行以下命令查看日志：${PLAIN}"
     echo -e "journalctl -u xray -e"
