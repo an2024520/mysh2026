@@ -1,0 +1,15 @@
+额外提示（关于 WireProxy）： 我在你的 WireProxy 日志中看到了一行： Retrying handshake because we stopped hearing back after 15 seconds 这意味着 WARP 与 Cloudflare 的握手有时候会超时。
+
+如果修复 Hysteria 后，你发现节点连上了但没有网（无法上网），请尝试修改 /etc/wireproxy/wireproxy.conf，将 Endpoint 中的域名改为 IP 地址，这通常能解决连接不稳定的问题：
+
+打开文件：nano /etc/wireproxy/wireproxy.conf
+
+找到 Endpoint = engage.cloudflareclient.com:2408
+
+修改为以下任意一个 IP：
+
+Endpoint = 162.159.192.1:2408
+
+或 Endpoint = 162.159.193.5:2408
+
+重启 WireProxy：systemctl restart wireproxy
