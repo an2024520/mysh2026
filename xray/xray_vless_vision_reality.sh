@@ -22,14 +22,13 @@ if [[ ! -f "$XRAY_BIN" ]]; then
     exit 1
 fi
 
-# 检查并安装 jq (为了处理 JSON)
-if ! command -v jq &> /dev/null; then
-    echo -e "${YELLOW}检测到缺少 jq 工具，正在安装...${PLAIN}"
-    apt update -y && apt install -y jq
+# 检查并安装 jq (为了处理 JSON) 和 openssl (为了生成 ShortId)
+if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
+    echo -e "${YELLOW}检测到缺少必要工具，正在安装 (jq, openssl)...${PLAIN}"
+    apt update -y && apt install -y jq openssl
 fi
 
 # 2. 核心逻辑：配置文件初始化
-# (这一步保证了模块运行不分先后：谁先运行谁就负责创建骨架)
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${YELLOW}配置文件不存在，由本模块初始化标准骨架...${PLAIN}"
     mkdir -p /usr/local/etc/xray
@@ -76,7 +75,6 @@ while true; do
     read -p "请输入监听端口 (推荐 443 或 8443, 默认 8443): " CUSTOM_PORT
     [[ -z "$CUSTOM_PORT" ]] && PORT=8443 && break
     if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
-        # 简单检查端口是否已被配置文件中的其他模块占用
         if grep -q "\"port\": $CUSTOM_PORT" "$CONFIG_FILE"; then
              echo -e "${RED}警告: 端口 $CUSTOM_PORT 似乎已被之前的模块占用了，请换一个！${PLAIN}"
         else
@@ -88,7 +86,7 @@ while true; do
     fi
 done
 
-# B. 伪装域名选择 (Reality 必须)
+# B. 伪装域名选择
 echo -e "${YELLOW}请选择伪装域名 (SNI) - 既然是Vision，推荐大厂域名:${PLAIN}"
 echo -e "  1. www.microsoft.com (微软 - 稳如老狗)"
 echo -e "  2. www.apple.com (苹果 - 经典)"
@@ -106,25 +104,23 @@ case $SNI_CHOICE in
     *) SNI="www.microsoft.com" ;;
 esac
 
-# 4. 生成密钥
+# 4. 生成密钥 (修复点：使用 Xray 自带命令生成 UUID)
 echo -e "${YELLOW}正在生成独立密钥...${PLAIN}"
-UUID=$(uuidgen)
-# Vision 建议生成多个 shortId 以增强抗探测能力，这里我们生成一个标准的
+
+# --- 修复：使用 Xray 生成 UUID，不依赖系统 uuidgen ---
+UUID=$($XRAY_BIN uuid)
+# --------------------------------------------------
+
 SHORT_ID=$(openssl rand -hex 8) 
 RAW_KEYS=$($XRAY_BIN x25519)
 PRIVATE_KEY=$(echo "$RAW_KEYS" | grep "Private" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 PUBLIC_KEY=$(echo "$RAW_KEYS" | grep -E "Password|Public" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 
 # 5. 构建节点 JSON (Vision 特供版)
-# -----------------------------------------------------------
 echo -e "${YELLOW}正在注入 Vision 节点...${PLAIN}"
 
 NODE_TAG="vless-vision-${PORT}"
 
-# 关键区别：
-# 1. flow: "xtls-rprx-vision" (开启流控)
-# 2. network: "tcp" (强制 TCP)
-# 3. 不再需要 xhttpSettings
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -162,7 +158,6 @@ NODE_JSON=$(jq -n \
       }
     }')
 
-# 追加到 inbounds
 tmp=$(mktemp)
 jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
@@ -173,7 +168,6 @@ sleep 2
 if systemctl is-active --quiet xray; then
     PUBLIC_IP=$(curl -s4 ifconfig.me)
     NODE_NAME="Xray-Vision-${PORT}"
-    # 分享链接中 flow=xtls-rprx-vision 非常重要
     SHARE_LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&headerType=none&type=tcp&flow=xtls-rprx-vision&sni=${SNI}&sid=${SHORT_ID}&fp=chrome#${NODE_NAME}"
 
     echo -e ""
@@ -187,8 +181,7 @@ if systemctl is-active --quiet xray; then
     echo -e "🚀 [分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "💡 小贴士: 在客户端中，请确保 '流控(flow)' 选项已识别为 xtls-rprx-vision"
 else
     echo -e "${RED}启动失败！${PLAIN}"
-    echo -e "可能是端口冲突或配置错误，请检查日志: journalctl -u xray -e"
+    echo -e "请检查日志: journalctl -u xray -e"
 fi
