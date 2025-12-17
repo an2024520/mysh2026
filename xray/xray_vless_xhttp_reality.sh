@@ -22,13 +22,12 @@ if [[ ! -f "$XRAY_BIN" ]]; then
     exit 1
 fi
 
-if ! command -v jq &> /dev/null; then
-    echo -e "${YELLOW}检测到缺少 jq 工具，正在安装...${PLAIN}"
-    apt update -y && apt install -y jq
+if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
+    echo -e "${YELLOW}检测到缺少必要工具，正在安装 (jq, openssl)...${PLAIN}"
+    apt update -y && apt install -y jq openssl
 fi
 
-# 2. 初始化配置文件骨架 (如果文件不存在)
-# 这一步必须在端口检测之前，确保 config.json 文件存在，grep 才能工作
+# 2. 初始化配置文件骨架
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${YELLOW}配置文件不存在，正在初始化标准骨架...${PLAIN}"
     mkdir -p /usr/local/etc/xray
@@ -66,20 +65,16 @@ EOF
 fi
 
 # 3. 用户配置参数
-# -----------------------------------------------------------
 echo -e "${YELLOW}--- 配置 VLESS (XHTTP) 节点参数 ---${PLAIN}"
 
-# A. 端口设置 (已升级：集成端口占用检测)
+# A. 端口设置
 while true; do
     read -p "请输入监听端口 (推荐 2053, 2083, 8443, 默认 2053): " CUSTOM_PORT
     [[ -z "$CUSTOM_PORT" ]] && PORT=2053 && break
     
     if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
-        # === 新增逻辑开始 ===
-        # 使用 grep 检查 config.json 中是否已经存在 "port": 端口号
         if grep -q "\"port\": $CUSTOM_PORT" "$CONFIG_FILE"; then
              echo -e "${RED}警告: 端口 $CUSTOM_PORT 似乎已被之前的模块占用了，请换一个！${PLAIN}"
-        # === 新增逻辑结束 ===
         else
              PORT="$CUSTOM_PORT"
              break
@@ -89,7 +84,7 @@ while true; do
     fi
 done
 
-# B. 伪装域名选择 (保留了任天堂)
+# B. 伪装域名选择
 echo -e "${YELLOW}请选择伪装域名 (SNI) - 日本 VPS 推荐:${PLAIN}"
 echo -e "  1. www.sony.jp (索尼日本 - 逻辑完美)"
 echo -e "  2. www.nintendo.co.jp (任天堂 - 模拟待机流量)"
@@ -117,23 +112,24 @@ if ! curl -s -I --max-time 5 "https://$SNI" >/dev/null; then
     [[ "$FORCE" != "y" ]] && exit 1
 fi
 
-# 4. 生成密钥
+# 4. 生成密钥 (修复点：使用 Xray 自带命令生成 UUID)
 echo -e "${YELLOW}正在生成密钥...${PLAIN}"
-UUID=$(uuidgen)
+
+# --- 修复：使用 Xray 生成 UUID ---
+UUID=$($XRAY_BIN uuid)
+# -------------------------------
+
 SHORT_ID=$(openssl rand -hex 4)
 XHTTP_PATH="/$(openssl rand -hex 4)"
 RAW_KEYS=$($XRAY_BIN x25519)
 PRIVATE_KEY=$(echo "$RAW_KEYS" | grep "Private" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 PUBLIC_KEY=$(echo "$RAW_KEYS" | grep -E "Password|Public" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 
-# 5. 构建节点 JSON 并追加到配置文件
-# -----------------------------------------------------------
+# 5. 构建节点 JSON
 echo -e "${YELLOW}正在将节点注入配置文件...${PLAIN}"
 
-# 定义 Tag 名称 (使用端口号区分，防止重复)
 NODE_TAG="vless-xhttp-${PORT}"
 
-# 使用 jq 构建临时的节点 JSON 对象
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -170,7 +166,6 @@ NODE_JSON=$(jq -n \
       }
     }')
 
-# 追加 JSON
 tmp=$(mktemp)
 jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
@@ -194,7 +189,6 @@ if systemctl is-active --quiet xray; then
     echo -e "🚀 [分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "💡 提示: 端口冲突检测已开启，你可以放心地多次运行此脚本。"
 else
     echo -e "${RED}启动失败！配置可能存在冲突。${PLAIN}"
     echo -e "请检查日志: journalctl -u xray -e"
