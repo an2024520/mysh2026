@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.3 - 动态链接架构版)
+#  全能协议管理中心 (Commander v3.4 - 动态链接 & 环境自洁)
 #  - 基础设施: Warp / Cloudflare Tunnel
 #  - 核心协议: Xray / Hysteria 2
-#  - 特性: 支持从云端 sh_url.txt 动态获取脚本链接
+#  - 特性: 动态获取链接 / 开局环境检查 / 强制更新模式
 # ============================================================
 
 # 颜色定义
@@ -19,13 +19,11 @@ GRAY='\033[0;37m'
 # 1. 核心配置与动态加载系统
 # ==========================================
 
-# [关键] 脚本索引文件的下载地址
-# 以后所有脚本的 URL 都在这个 txt 里维护，menu.sh 不再写死链接
+# 脚本索引文件的下载地址
 URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
 
 # [本地文件名定义]
-# 这些名字必须与 sh_url.txt 第一列的名称完全一致(区分大小写)
 FILE_WARP="warp_wireproxy_socks5.sh"
 FILE_INSTALL_CF="install_cf_tunnel_debian.sh"
 
@@ -44,10 +42,45 @@ FILE_XRAY_UNINSTALL="xray_uninstall_all.sh"
 
 FILE_HY2="hy2.sh"
 
+# --- 函数: 环境清理与更新检查 (新增) ---
+check_dir_clean() {
+    local current_script=$(basename "$0")
+    # 统计当前目录下除了脚本自己以外的文件数量
+    local file_count=$(ls -1 | grep -v "^$current_script$" | wc -l)
+
+    # 只有当目录下有其他文件时才询问
+    if [[ "$file_count" -gt 0 ]]; then
+        echo -e "${YELLOW}======================================================${PLAIN}"
+        echo -e "${YELLOW} 检测到当前目录 [ $(pwd) ] 下存在 $file_count 个历史文件/杂项。${PLAIN}"
+        echo -e "${YELLOW}======================================================${PLAIN}"
+        echo -e "为了确保脚本运行在最新状态，建议在【空文件夹】下运行。"
+        echo -e "您可以选择清空当前目录（保留本脚本），这等同于【强制更新】所有组件。"
+        echo -e ""
+        read -p "是否清空当前目录文件并重新下载? (y/n, 默认 n): " clean_opt
+        
+        if [[ "$clean_opt" == "y" ]]; then
+            echo -e "${RED}警告: 即将删除 $(pwd) 下除 $current_script 外的所有文件！${PLAIN}"
+            read -p "请再次确认 (输入 y 确认): " confirm_clean
+            if [[ "$confirm_clean" == "y" ]]; then
+                echo -e "${YELLOW}正在清理...${PLAIN}"
+                # 遍历删除，确保不删自己
+                ls | grep -v "^$current_script$" | xargs rm -rf
+                echo -e "${GREEN}清理完成！${PLAIN}"
+                echo -e "${GREEN}旧组件已移除，接下来的操作将自动下载最新版脚本。${PLAIN}"
+                sleep 1
+            else
+                echo -e "操作取消。"
+            fi
+        else
+            echo -e "${GRAY}保留现有文件继续运行... (如遇报错请尝试清空目录)${PLAIN}"
+        fi
+        echo -e ""
+    fi
+}
+
 # --- 函数: 初始化链接列表 ---
 init_urls() {
     echo -e "${YELLOW}正在同步最新脚本列表...${PLAIN}"
-    # 强制下载最新的 url 列表，超时设置为 5 秒
     wget -T 5 -qO "$LOCAL_LIST_FILE" "$URL_LIST_FILE"
     
     if [[ $? -ne 0 ]]; then
@@ -56,7 +89,6 @@ init_urls() {
             echo -e "${YELLOW}网络异常，将使用本地缓存的列表继续运行。${PLAIN}"
         else
             echo -e "${RED}致命错误: 无法获取脚本下载地址，且无本地缓存。程序退出。${PLAIN}"
-            echo -e "请检查 VPS 网络连接或 GitHub 访问状态。"
             exit 1
         fi
     else
@@ -67,42 +99,36 @@ init_urls() {
 # --- 函数: 根据文件名查找 URL ---
 get_url_by_name() {
     local fname="$1"
-    # 在文件中查找以 fname 开头的行，提取第二列
-    # 格式要求: 文件名 https://url...
     local found_url=$(grep "^$fname" "$LOCAL_LIST_FILE" | awk '{print $2}' | head -n 1)
     echo "$found_url"
 }
 
-# --- 函数: 检查/下载/运行 (核心) ---
+# --- 函数: 检查/下载/运行 ---
 check_run() {
     local script_name="$1"
     
-    # 1. 如果文件不存在，则尝试下载
+    # 如果文件不存在(或已被清理)，则下载
     if [[ ! -f "$script_name" ]]; then
-        echo -e "${YELLOW}脚本 [$script_name] 本地不存在，正在查找下载地址...${PLAIN}"
+        echo -e "${YELLOW}脚本 [$script_name] 本地不存在，正在获取最新版...${PLAIN}"
         
-        # 动态获取 URL
         local script_url=$(get_url_by_name "$script_name")
         
         if [[ -z "$script_url" ]]; then
             echo -e "${RED}错误: 在 sh_url.txt 中未找到 [$script_name] 的记录。${PLAIN}"
-            echo -e "请检查 sh_url.txt 是否包含该文件名的配置。"
             read -p "按回车键返回..."
             return
         fi
         
-        echo -e "下载地址: ${GRAY}$script_url${PLAIN}"
         wget -O "$script_name" "$script_url"
         
         if [[ $? -ne 0 ]]; then
-            echo -e "${RED}下载失败！请检查网络或 URL 有效性。${PLAIN}"
+            echo -e "${RED}下载失败！请检查网络。${PLAIN}"
             read -p "按回车键返回..."
             return
         fi
         echo -e "${GREEN}下载成功！${PLAIN}"
     fi
 
-    # 2. 赋予权限并运行
     chmod +x "$script_name"
     ./"$script_name"
     
@@ -226,9 +252,13 @@ menu_xray() {
 # 3. 主程序入口
 # ==========================================
 
-# 启动时先初始化链接列表
+# 1. 开局先检查环境是否干净 (询问是否清理/更新)
+check_dir_clean
+
+# 2. 同步最新的脚本链接
 init_urls
 
+# 3. 进入主循环
 while true; do
     clear
     echo -e "${GREEN}========================================${PLAIN}"
