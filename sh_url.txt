@@ -1,0 +1,11 @@
+xray_core.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_core.sh
+xray_vless_xhttp_reality.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_xhttp_reality.sh
+xray_vless_vision_reality.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_vision_reality.sh
+xray_module_attach_warp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_attach_warp.sh
+xray_module_boost.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_boost.sh
+xray_module_detach_warp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_detach_warp.sh
+xray_module_node_del.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_node_del.sh
+xray_get_node_details.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_get_node_details.sh
+warp_wireproxy_socks5.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/warp/warp_wireproxy_socks5.sh
+hy2.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/hy2/hy2.sh
+xray_uninstall_all.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_uninstall_all.sh
