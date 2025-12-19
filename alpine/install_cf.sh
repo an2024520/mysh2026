@@ -1,43 +1,42 @@
 #!/bin/sh
 
-echo "☢️ 启动核弹级清理..."
+echo "🔍 第一步：检查 WireProxy 状态..."
+# 检查端口 40000 是否被监听
+if netstat -an | grep -q "127.0.0.1:40000"; then
+    echo "✅ 发现 WireProxy 正在运行 (端口 40000)！"
+else
+    echo "⚠️ 警告：没检测到端口 40000。"
+    echo "尝试启动 WireProxy..."
+    rc-service wireproxy restart 2>/dev/null
+    sleep 3
+    if netstat -an | grep -q "127.0.0.1:40000"; then
+        echo "✅ WireProxy 启动成功！"
+    else
+        echo "❌ 错误：WireProxy 没起来。请先运行之前的 WireProxy 安装脚本。"
+        exit 1
+    fi
+fi
 
-# 1. 停止服务
+echo "🛑 第二步：停止 Cloudflared..."
 rc-service cloudflared stop >/dev/null 2>&1
 killall cloudflared >/dev/null 2>&1
 
-# 2. 删除所有可能的残留配置 (关键步骤！)
-# 你的报错一定是因为这其中某个文件还活着
-echo "🧹 删除旧配置..."
-rm -f /root/.cloudflared/config.yml
-rm -f /root/.cloudflared/config.yaml
-rm -rf /root/.cloudflared
-rm -f /etc/cloudflared/config.yml
-rm -f /etc/cloudflared/config.yaml
-rm -f /usr/local/etc/cloudflared/config.yml
-rm -f /usr/local/etc/cloudflared/config.yaml
-
-# 3. 准备 Token (之前已提取成功，直接硬编码在脚本里)
+# 提取 Token (老规矩，防止丢失)
 MY_TOKEN="eyJhIjoiYWYzN2NhNDc5NDRkMDFlNGY1NTQ2ZmU2NWIyMzRlNjQiLCJ0IjoiNWU5MDYwMjMtMzUxMC00MTZlLWI5MjUtMDQ5YmRmNDA1OWVkIiwicyI6Ik1qYzFPVE5oWlRrdE5HRTRNUzAwWkRjNUxXRmpNRGd0TlRGa1pqSmpZemRrTjJJeiJ9"
 
-echo "📝 建立唯一的配置文件..."
-mkdir -p /etc/cloudflared
-# 只写入 Token 和日志路径，绝不写会导致报错的参数
-cat > /etc/cloudflared/config.yml <<EOF
-tunnel: "$MY_TOKEN"
-logfile: "/var/log/cloudflared.log"
-loglevel: "info"
-EOF
+echo "⚙️ 第三步：配置 Cloudflared 走代理..."
+# 我们不再需要复杂的配置文件了，删掉它们，避免干扰
+rm -f /etc/cloudflared/config.yml
 
-echo "⚙️ 重写启动脚本 (注入环境变量)..."
+# 写入带有代理配置的启动脚本
 cat > /etc/init.d/cloudflared <<INIT
 #!/sbin/openrc-run
 
 name="cloudflared"
 description="Cloudflare Tunnel Agent"
 command="/usr/bin/cloudflared"
-# 强制指定配置文件路径，防止它乱读
-command_args="tunnel run --config /etc/cloudflared/config.yml"
+# 只保留最简单的 tunnel run
+command_args="tunnel run --token $MY_TOKEN"
 command_background=true
 pidfile="/run/cloudflared.pid"
 output_log="/var/log/cloudflared.log"
@@ -46,29 +45,32 @@ error_log="/var/log/cloudflared.err"
 depend() {
     need net
     after firewall
+    # 关键：必须确保 wireproxy 先启动
+    need wireproxy
 }
 
 start_pre() {
-    # 使用环境变量强制 IPv6 和 HTTP2
-    # 这比配置文件更可靠，不会有类型错误
-    export TUNNEL_EDGE_IP_VERSION="6"
-    export TUNNEL_PROTOCOL="http2"
+    # 核心魔法在这里！！！
+    # 通过环境变量告诉 cloudflared 使用本地 SOCKS5 代理
+    export TUNNEL_PROXY_ADDRESS="127.0.0.1"
+    export TUNNEL_PROXY_PORT="40000"
+    
+    # 既然走了代理，就无需强制 IPv6 了，让它默认去连就行
+    # 代理(WARP)会自动处理 IPv4 连接
 }
 INIT
 chmod +x /etc/init.d/cloudflared
 
-echo "🚀 启动服务..."
+echo "🚀 第四步：启动服务..."
 rc-service cloudflared restart
 sleep 5
 
-echo "📊 最终检查..."
-# 检查是否还有那个该死的错误
-if grep -q "expected string found int" /var/log/cloudflared.err; then
-    echo "❌ 失败：幽灵文件依然存在！(请检查 /home 目录下是否有配置)"
-    find / -name config.yml 2>/dev/null | grep cloudflared
-elif grep -q "Registered tunnel connection" /var/log/cloudflared.err /var/log/cloudflared.log; then
-    echo "✅✅✅ 成功连接！这次是真的！"
+echo "📊 检查结果..."
+if grep -q "Registered tunnel connection" /var/log/cloudflared.err /var/log/cloudflared.log; then
+    echo "✅✅✅ 成功了！Cloudflared 通过 WireProxy 连上了！"
+    echo "链路：Cloudflared -> 127.0.0.1:40000 -> WARP -> Cloudflare Edge"
 else
-    echo "ℹ️ 无格式错误，查看连接状态..."
+    echo "ℹ️ 查看日志："
+    echo "--------------------------------"
     tail -n 10 /var/log/cloudflared.err
 fi
