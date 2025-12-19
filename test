@@ -1,26 +1,26 @@
 #!/bin/sh
 
-echo "🛑 第一步：停止旧服务..."
+echo "🛑 第一步：清理旧配置..."
 rc-service cloudflared stop
 killall cloudflared 2>/dev/null
+rm -f /etc/init.d/cloudflared
+rm -f /etc/cloudflared/config.yml
 
 echo "📝 第二步：请输入 Token..."
-echo "请务必粘贴以 'eyJh' 开头的完整长串："
+echo "-------------------------------------------------------"
+echo "请粘贴以 'eyJh' 开头的完整 Token字符串，然后按回车："
 read -r MY_TOKEN
 
-# 简单检查 Token 格式
-if echo "$MY_TOKEN" | grep -q "^eyJh"; then
-    echo "✅ Token 格式看起来正确。"
-else
-    echo "⚠️ 警告：你输入的 Token 可能不正确 (不是以 eyJh 开头)。"
-    echo "但我们将继续尝试..."
+# 简单检查 Token 是否为空
+if [ -z "$MY_TOKEN" ]; then
+    echo "❌ 错误：你没有输入 Token！脚本退出。"
+    exit 1
 fi
 
-echo "⚙️ 第三步：写入修正后的配置文件..."
+echo "⚙️ 第三步：写入配置文件 (修复 int/string 格式错误)..."
 mkdir -p /etc/cloudflared
-# 核心修正：
-# 1. edge-ip-version 加上了双引号 "6"
-# 2. protocol 保持 http2
+
+# 核心修正：edge-ip-version: "6" (加了双引号，解决 int 报错)
 cat > /etc/cloudflared/config.yml <<EOF
 tunnel: $MY_TOKEN
 edge-ip-version: "6"
@@ -29,8 +29,8 @@ logfile: /var/log/cloudflared.log
 loglevel: info
 EOF
 
-echo "🚀 第四步：重置服务并启动..."
-# 重写启动脚本，不带任何参数，让它强制读 config.yml
+echo "🚀 第四步：重写启动服务..."
+# 这里的 command_args 留空，强制它读上面的 config.yml
 cat > /etc/init.d/cloudflared <<EOF
 #!/sbin/openrc-run
 
@@ -50,18 +50,20 @@ depend() {
 EOF
 chmod +x /etc/init.d/cloudflared
 
-# 启动
+echo "🔄 第五步：启动并验证..."
 rc-service cloudflared restart
 sleep 5
 
-echo "📊 最终检查..."
-# 检查是否还有那个类型错误
+echo "📊 检查结果..."
+# 检查是否还有格式错误
 if grep -q "expected string found int" /var/log/cloudflared.err; then
-    echo "❌ 失败：依然提示配置格式错误。"
+    echo "❌ 失败：配置文件格式依然不对。"
+# 检查是否成功
 elif grep -q "Registered tunnel connection" /var/log/cloudflared.err /var/log/cloudflared.log; then
-    echo "✅✅✅ 成功！Tunnel 已注册并连接！"
+    echo "✅✅✅ 恭喜！Tunnel 已成功注册并连接！"
+    echo "你的 IPv6 节点应该复活了。"
 else
-    echo "ℹ️ 请查看下方最新日志判断状态："
+    echo "⚠️ 状态未知，请查看下方最新日志："
     echo "--------------------------------"
     tail -n 10 /var/log/cloudflared.err
 fi
