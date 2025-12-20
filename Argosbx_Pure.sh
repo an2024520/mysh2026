@@ -16,7 +16,7 @@ SCRIPT_PATH="$WORKDIR/agsbx_pure.sh" # 本地副本路径
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
 # ⚠️ 如果你有自己的GitHub仓库，请修改这里。否则脚本会使用本地复制模式。
-SELF_URL="github.com/an2024520/test/raw/refs/heads/main/Argosbx-Pure.sh" 
+SELF_URL="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/Argosbx_Pure.sh" 
 
 # --- 2. 变量映射 ---
 [ -z "${vlpt+x}" ] || vlp=yes
