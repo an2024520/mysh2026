@@ -70,7 +70,7 @@ get_ip() {
 configure_warp_if_needed() {
     # 1. 检查是否需要开启 WARP
     if [ -z "$WARP_MODE" ]; then
-        return # 参数中没有 warp=...，直接返回，不打扰用户
+        return # 参数中没有 warp=...，直接返回
     fi
 
     echo ""
@@ -109,9 +109,9 @@ configure_warp_if_needed() {
 
 manual_input_warp() {
     echo ""
-    echo "📝 请输入 WARP 信息："
+    echo "📝 请输入 WARP 信息 (粘贴后回车)："
     read -p " > PrivateKey (私钥): " WP_KEY
-    read -p " > Internal IP (例如 172.16.0.2 或 2606:...): " WP_IP
+    read -p " > Internal IP (例如 172.16.0.2): " WP_IP
     read -p " > Reserved (格式如 [1,2,3]): " WP_RES
     
     # 简单校验
@@ -127,8 +127,9 @@ auto_register_warp() {
     chmod +x wgcf
 
     echo "📝 正在注册 WARP 账号..."
+    # 尝试注册，如果失败(比如IP被CF拉黑)则处理
     if ! ./wgcf register --accept-tos >/dev/null 2>&1; then
-        echo "❌ WARP 注册失败 (可能是 CF 接口限制)。"
+        echo "❌ WARP 注册失败 (可能是 CF 接口限制或网络问题)。"
         rm -f wgcf wgcf-account.toml
         WARP_MODE=""
         return
@@ -157,14 +158,14 @@ auto_register_warp() {
 
     echo ""
     echo "################ [请务必保存以下信息] ################"
-    echo " PrivateKey: $WP_KEY"
+    echo " PrivateKey:  $WP_KEY"
     echo " Internal IP: $WP_IP"
-    echo " Reserved:   $WP_RES"
+    echo " Reserved:    $WP_RES"
     echo "######################################################"
-    echo "按回车键继续..."
+    echo "按回车键继续安装..."
     read
 
-    # 清理残留
+    # 清理残留 (核心步骤：用完即焚)
     rm -f wgcf wgcf-account.toml wgcf-profile.conf
 }
 
@@ -219,22 +220,22 @@ generate_config() {
     ENABLE_WARP=false
     if [ -n "$WARP_MODE" ] && [ -n "$WP_KEY" ]; then
         ENABLE_WARP=true
-        # 地址格式化
+        # 智能补全 IP (保证双栈配置)
         if [[ "$WP_IP" =~ .*:.* ]]; then
-             # IPv6
+             # 用户提供 IPv6 -> 补一个假 IPv4 (172.16.0.2)
              WARP_ADDR_X="\"172.16.0.2/32\", \"${WP_IP}/128\""
              WARP_ADDR_S="\"172.16.0.2/32\", \"${WP_IP}/128\""
         else
-             # IPv4
+             # 用户提供 IPv4 -> 补一个假 IPv6 (Cloudflare段)
              WARP_ADDR_X="\"${WP_IP}/32\", \"2606:4700:110:8d8d:1845:c39f:2dd5:a03a/128\""
              WARP_ADDR_S="\"${WP_IP}/32\", \"2606:4700:110:8d8d:1845:c39f:2dd5:a03a/128\""
         fi
 
-        # 路由策略判定
+        # 路由策略判定 (兼容原脚本参数)
         ROUTE_V4=false; ROUTE_V6=false
         [[ "$WARP_MODE" == *"4"* ]] && ROUTE_V4=true
         [[ "$WARP_MODE" == *"6"* ]] && ROUTE_V6=true
-        # 默认兜底：接管 IPv4
+        # 默认兜底：如果没有数字，默认接管 IPv4 (最常用场景)
         if [ "$ROUTE_V4" = false ] && [ "$ROUTE_V6" = false ]; then ROUTE_V4=true; fi
     fi
 
@@ -265,6 +266,7 @@ EOF
   ], "outbounds": [ { "protocol": "freedom", "tag": "direct" }
 EOF
     if [ "$ENABLE_WARP" = true ]; then
+        # 注意: publicKey 是 CF 固定的
         cat >> "$CONF_DIR/xr.json" <<EOF
     ,{ "tag": "warp-out", "protocol": "wireguard", "settings": { "secretKey": "${WP_KEY}", "address": [ ${WARP_ADDR_X} ], "peers": [{ "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", "endpoint": "engage.cloudflareclient.com:2408", "reserved": ${WP_RES} }] } }
 EOF
@@ -386,7 +388,7 @@ cmd_list() {
     echo "================ [Argosbx 净化版 v2.0] ================"
     echo "  UUID: $uuid"
     echo "  IP:   $server_ip"
-    [ -n "$WARP_MODE" ] && echo "  WARP: 开启 (模式: ${WARP_MODE:-默认})"
+    [ -n "$WARP_MODE" ] && echo "  WARP: 开启 (模式: ${WARP_MODE:-IPv4})"
     echo "------------------------------------------------------"
     [ -f "$CONF_DIR/port_vl_re" ] && echo "🔥 [Reality] vless://$uuid@$server_ip:$(cat $CONF_DIR/port_vl_re)?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$(cat $CONF_DIR/ym_vl_re)&fp=chrome&pbk=$(cat $CONF_DIR/xrk/public_key)&sid=$(cat $CONF_DIR/xrk/short_id)&type=tcp&headerType=none#Clean-Reality"
     [ -f "$CONF_DIR/port_hy2" ] && echo "🚀 [Hysteria2] hysteria2://$uuid@$server_ip:$(cat $CONF_DIR/port_hy2)?security=tls&alpn=h3&insecure=1&sni=www.bing.com#Clean-Hy2"
@@ -417,14 +419,14 @@ case "$1" in
     rep)
         echo "♻️ 重置配置..."
         rm -rf "$CONF_DIR"/*.json "$CONF_DIR"/port*
-        configure_warp_if_needed # 重新检测 WARP 需求
+        configure_warp_if_needed # 重新检测
         generate_config
         restart_services
         cmd_list
         ;;
     *)
         echo ">>> 开始安装 Argosbx 净化版 v2.0..."
-        configure_warp_if_needed # 核心：按需触发 WARP 配置
+        configure_warp_if_needed # 触发 WARP 配置
         download_core
         generate_config
         setup_services
