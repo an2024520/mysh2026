@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Argosbx 终极净化版 v3.3 (Refactored by Gemini)
+# Argosbx 终极净化版 v3.5 (Refactored by Gemini)
 # 修复日志：
-# v3.3: 🚨 修复Xray密钥提取正则错误(导致pbk为空) | 快捷指令自我写入兜底 | 强制放行端口
-# v3.2: 修复目录路径错误
+# v3.5: 重构 List 模块 (移植 jq 解析逻辑) | 快捷指令强制落地 | 修复 Reality 公钥
+# v3.4: 修复目录权限
 # ==============================================================================
 
 # --- 1. 全局配置 ---
@@ -15,7 +15,7 @@ CONF_DIR="$WORKDIR/conf"
 SCRIPT_PATH="$WORKDIR/agsbx_pure.sh"
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
-# ⚠️ 快捷指令自更新地址 (请保持跟你当前使用的 URL 一致)
+# ⚠️ 快捷指令自更新地址 (必填，用于 agsbx 命令修复)
 SELF_URL="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/Argosbx_Pure.sh"
 
 # --- 2. 变量映射 ---
@@ -49,7 +49,7 @@ init_variables() {
     
     # 1. UUID 生成
     if [ -z "$uuid" ]; then
-        if [ -f "$CONF_DIR/uuid" ]; then
+        if [ -f "$CONF_DIR/uuid" ] && [ -s "$CONF_DIR/uuid" ]; then
             uuid=$(cat "$CONF_DIR/uuid")
         else
             uuid=$(cat /proc/sys/kernel/random/uuid)
@@ -64,11 +64,6 @@ init_variables() {
     if [ ! -f "$CONF_DIR/cert.pem" ]; then
         openssl ecparam -genkey -name prime256v1 -out "$CONF_DIR/private.key" 2>/dev/null
         openssl req -new -x509 -days 36500 -key "$CONF_DIR/private.key" -out "$CONF_DIR/cert.pem" -subj "/CN=www.bing.com" 2>/dev/null
-    fi
-
-    # 3. 标记是否需要生成 Xray 密钥
-    if [ ! -f "$CONF_DIR/xrk/private_key" ] || [ ! -s "$CONF_DIR/xrk/private_key" ]; then
-        NEED_XRAY_KEYS=true
     fi
 }
 
@@ -92,13 +87,15 @@ cleanup_original_bloatware() {
 # --- 5. 环境检查 ---
 
 check_and_fix_network() {
-    if ! command -v curl >/dev/null 2>&1; then
+    # 增加 jq 依赖
+    if ! command -v jq >/dev/null 2>&1; then
         if [ -f /etc/debian_version ]; then 
-            sudo apt-get update -y && sudo apt-get install -y curl wget tar unzip socat openssl iptables
+            sudo apt-get update -y && sudo apt-get install -y curl wget tar unzip socat openssl iptables jq
         elif [ -f /etc/redhat-release ]; then 
-            sudo yum update -y && sudo yum install -y curl wget tar unzip socat openssl iptables
+            sudo yum update -y && sudo yum install -y curl wget tar unzip socat openssl iptables jq
         fi
     fi
+    
     if ! curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null && curl -6 -s --connect-timeout 2 https://2606:4700:4700::1111 >/dev/null; then
         if [ ! -f "$BACKUP_DNS" ]; then
             echo " ⚠️  检测到纯 IPv6 环境，正在临时优化 DNS..."
@@ -182,27 +179,27 @@ generate_config() {
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
 
-    # 生成 Xray 密钥 (修复提取逻辑)
+    # 生成 Xray 密钥 (这里只需确保文件有内容，内容正确与否交给 Xray 自己)
     if [ -n "$vwp" ] || [ -n "$vlp" ]; then
-        if [ "$NEED_XRAY_KEYS" = true ] || [ ! -f "$CONF_DIR/xrk/private_key" ]; then
+        # 如果不存在私钥，生成之
+        if [ ! -s "$CONF_DIR/xrk/private_key" ]; then
             "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"
-            # 🚨 核心修复：Xray输出是 "Private Key: xxx"，awk需要匹配 "Key:" 即 $3
-            awk '/Private Key/{print $3}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/private_key"
-            awk '/Public Key/{print $3}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/public_key"
+            grep "Private Key" "$CONF_DIR/temp_key" | cut -d: -f2 | tr -d ' \n\r' > "$CONF_DIR/xrk/private_key"
+            grep "Public Key" "$CONF_DIR/temp_key" | cut -d: -f2 | tr -d ' \n\r' > "$CONF_DIR/xrk/public_key"
             rm "$CONF_DIR/temp_key"
             openssl rand -hex 4 | tr -d '\n\r ' > "$CONF_DIR/xrk/short_id"
         fi
-        
+        # ENC 密钥
         if [ ! -f "$CONF_DIR/xrk/dekey" ]; then
             vlkey=$("$BIN_DIR/xray" vlessenc)
-            echo "$vlkey" | grep '"decryption":' | sed -n '2p' | cut -d' ' -f2- | tr -d '"' | tr -d '\n\r ' > "$CONF_DIR/xrk/dekey"
-            echo "$vlkey" | grep '"encryption":' | sed -n '2p' | cut -d' ' -f2- | tr -d '"' | tr -d '\n\r ' > "$CONF_DIR/xrk/enkey"
+            echo "$vlkey" | grep '"decryption":' | cut -d: -f2 | tr -d ' ",\n\r' > "$CONF_DIR/xrk/dekey"
+            echo "$vlkey" | grep '"encryption":' | cut -d: -f2 | tr -d ' ",\n\r' > "$CONF_DIR/xrk/enkey"
         fi
         dekey=$(cat "$CONF_DIR/xrk/dekey")
-        enkey=$(cat "$CONF_DIR/xrk/enkey")
+        # enkey 变量在 list 时动态获取
     fi
 
-    # 端口生成 (生成后立即放行防火墙)
+    # 端口生成 (包含 UDP 放行)
     open_port() {
         if command -v iptables >/dev/null; then
             iptables -I INPUT -p tcp --dport $1 -j ACCEPT 2>/dev/null
@@ -241,17 +238,17 @@ EOF
         echo "$port_vl_re" > "$CONF_DIR/port_vl_re"
         open_port $port_vl_re
         cat >> "$CONF_DIR/xr.json" <<EOF
-    { "listen": "::", "port": $port_vl_re, "protocol": "vless", "settings": { "clients": [{ "id": "${uuid}", "flow": "xtls-rprx-vision" }], "decryption": "none" }, "streamSettings": { "network": "tcp", "security": "reality", "realitySettings": { "dest": "${ym_vl_re}:443", "serverNames": ["${ym_vl_re}"], "privateKey": "$(cat $CONF_DIR/xrk/private_key)", "shortIds": ["$(cat $CONF_DIR/xrk/short_id)"] } } },
+    { "tag": "vless-reality", "listen": "::", "port": $port_vl_re, "protocol": "vless", "settings": { "clients": [{ "id": "${uuid}", "flow": "xtls-rprx-vision" }], "decryption": "none" }, "streamSettings": { "network": "tcp", "security": "reality", "realitySettings": { "dest": "${ym_vl_re}:443", "serverNames": ["${ym_vl_re}"], "privateKey": "$(cat $CONF_DIR/xrk/private_key)", "shortIds": ["$(cat $CONF_DIR/xrk/short_id)"] } } },
 EOF
     fi
     if [ -n "$vmp" ]; then
         cat >> "$CONF_DIR/xr.json" <<EOF
-    { "listen": "::", "port": ${port_vm_ws}, "protocol": "vmess", "settings": { "clients": [{ "id": "${uuid}" }] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/${uuid}-vm" } } },
+    { "tag": "vmess-ws", "listen": "::", "port": ${port_vm_ws}, "protocol": "vmess", "settings": { "clients": [{ "id": "${uuid}" }] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/${uuid}-vm" } } },
 EOF
     fi
     if [ -n "$vwp" ]; then
         cat >> "$CONF_DIR/xr.json" <<EOF
-    { "listen": "::", "port": ${port_vw}, "protocol": "vless", "settings": { "clients": [{ "id": "${uuid}" }], "decryption": "${dekey}" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/${uuid}-vw" } } },
+    { "tag": "vless-ws", "listen": "::", "port": ${port_vw}, "protocol": "vless", "settings": { "clients": [{ "id": "${uuid}" }], "decryption": "${dekey}" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/${uuid}-vw" } } },
 EOF
     fi
     sed -i '$ s/,$//' "$CONF_DIR/xr.json"
@@ -286,7 +283,7 @@ EOF
         echo "$port_hy2" > "$CONF_DIR/port_hy2"
         open_port $port_hy2
         cat >> "$CONF_DIR/sb.json" <<EOF
-    { "type": "hysteria2", "listen": "::", "listen_port": ${port_hy2}, "users": [{ "password": "${uuid}" }], "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "$CONF_DIR/cert.pem", "key_path": "$CONF_DIR/private.key" } },
+    { "type": "hysteria2", "tag": "hy2-in", "listen": "::", "listen_port": ${port_hy2}, "users": [{ "password": "${uuid}" }], "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "$CONF_DIR/cert.pem", "key_path": "$CONF_DIR/private.key" } },
 EOF
     fi
     if [ -n "$tup" ]; then
@@ -294,7 +291,7 @@ EOF
         echo "$port_tu" > "$CONF_DIR/port_tu"
         open_port $port_tu
         cat >> "$CONF_DIR/sb.json" <<EOF
-    { "type": "tuic", "listen": "::", "listen_port": ${port_tu}, "users": [{ "uuid": "${uuid}", "password": "${uuid}" }], "congestion_control": "bbr", "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "$CONF_DIR/cert.pem", "key_path": "$CONF_DIR/private.key" } },
+    { "type": "tuic", "tag": "tuic-in", "listen": "::", "listen_port": ${port_tu}, "users": [{ "uuid": "${uuid}", "password": "${uuid}" }], "congestion_control": "bbr", "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "$CONF_DIR/cert.pem", "key_path": "$CONF_DIR/private.key" } },
 EOF
     fi
     sed -i '$ s/,$//' "$CONF_DIR/sb.json"
@@ -382,145 +379,120 @@ restart_services() {
 }
 
 setup_shortcut() {
-    # 兜底逻辑：如果脚本文件本身存在，则复制；否则尝试下载；再否则直接写入自身
-    if [[ -f "$0" ]] && [[ "$0" != "bash" ]]; then
-        cp "$0" "$SCRIPT_PATH"
-    elif [ -n "$SELF_URL" ] && wget --spider -q "$SELF_URL"; then
+    # 强制落地策略：无论如何，先把脚本内容写入磁盘
+    # 1. 尝试下载
+    if [ -n "$SELF_URL" ]; then
         wget -qO "$SCRIPT_PATH" "$SELF_URL"
+    fi
+    
+    # 2. 如果下载失败（文件不存在或为空），尝试复制 $0
+    if [ ! -s "$SCRIPT_PATH" ] && [[ -f "$0" ]] && [[ "$0" != "bash" ]]; then
+        cp "$0" "$SCRIPT_PATH"
+    fi
+    
+    # 3. 赋予权限并链接
+    if [ -s "$SCRIPT_PATH" ]; then
+        chmod +x "$SCRIPT_PATH"
+        sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx 2>/dev/null
+        hash -r 2>/dev/null
     else
-        # 终极兜底：将当前内存中的脚本内容写入文件 (适用于 curl | bash 且下载失败)
-        # 注意：这里我们使用 cat 读取当前脚本的 source，但在管道模式下 $0 是 bash
-        # 所以我们只能写入一个提示脚本
-        cat > "$SCRIPT_PATH" <<EOF
-#!/bin/bash
-echo "⚠️ 错误：由于网络原因，agsbx 快捷指令未正确安装。"
-echo "请手动下载脚本运行：wget -qO install.sh $SELF_URL && chmod +x install.sh && ./install.sh"
-EOF
+        echo "⚠️ 警告：无法下载或复制脚本到 $SCRIPT_PATH，'agsbx' 命令可能不可用。"
     fi
-    chmod +x "$SCRIPT_PATH"
-    sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx 2>/dev/null
-    hash -r 2>/dev/null
 }
 
-print_clash_meta() {
-    echo ""
-    echo "================ [Clash Meta / OpenClash 格式配置] ================"
-    echo "proxies:"
-    if [ -f "$CONF_DIR/port_vl_re" ]; then
-        P_PK=$(cat "$CONF_DIR/xrk/public_key" | tr -d '\n\r ')
-        P_SID=$(cat "$CONF_DIR/xrk/short_id" | tr -d '\n\r ')
-        echo "  - name: Clean-Reality"
-        echo "    type: vless"
-        echo "    server: $raw_ip"
-        echo "    port: $(cat $CONF_DIR/port_vl_re)"
-        echo "    uuid: $uuid"
-        echo "    network: tcp"
-        echo "    tls: true"
-        echo "    udp: true"
-        echo "    flow: xtls-rprx-vision"
-        echo "    servername: $(cat $CONF_DIR/ym_vl_re)"
-        echo "    reality-opts:"
-        echo "      public-key: $P_PK"
-        echo "      short-id: $P_SID"
-        echo "    client-fingerprint: chrome"
-    fi
-    if [ -f "$CONF_DIR/port_hy2" ]; then
-        echo "  - name: Clean-Hy2"
-        echo "    type: hysteria2"
-        echo "    server: $raw_ip"
-        echo "    port: $(cat $CONF_DIR/port_hy2)"
-        echo "    password: $uuid"
-        echo "    sni: www.bing.com"
-        echo "    skip-cert-verify: true"
-        echo "    alpn:"
-        echo "      - h3"
-    fi
-    if [ -n "$ARGO_MODE" ] || [ -f "$CONF_DIR/port_vm_ws" ]; then
-        if [ -n "$ARGO_MODE" ]; then
-            if [ -z "$ARGO_AUTH" ]; then 
-                SERVER_ADDR=$(journalctl -u argo-clean -n 20 --no-pager | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1 | sed 's/https:\/\///')
-            else 
-                SERVER_ADDR="${ARGO_DOMAIN}"
-            fi
-            SERVER_PORT=443; IS_TLS=true; SKIP_CERT=false; ARGO_HOST="$SERVER_ADDR"
-        else
-            SERVER_ADDR="$raw_ip"; SERVER_PORT=$(cat $CONF_DIR/port_vm_ws); IS_TLS=false; SKIP_CERT=true; ARGO_HOST="www.bing.com"
-        fi
-
-        if [ -f "$CONF_DIR/port_vm_ws" ]; then
-            echo "  - name: Clean-VMess"
-            echo "    type: vmess"
-            echo "    server: $SERVER_ADDR"
-            echo "    port: $SERVER_PORT"
-            echo "    uuid: $uuid"
-            echo "    alterId: 0"
-            echo "    cipher: auto"
-            echo "    udp: true"
-            echo "    tls: $IS_TLS"
-            echo "    skip-cert-verify: $SKIP_CERT"
-            echo "    network: ws"
-            echo "    ws-opts:"
-            echo "      path: /$uuid-vm"
-            echo "      headers:"
-            echo "        Host: $ARGO_HOST"
-        fi
-        if [ -f "$CONF_DIR/port_vw" ] && [ -n "$ARGO_MODE" ]; then
-             echo "  - name: Clean-VLESS-Argo"
-             echo "    type: vless"
-             echo "    server: $SERVER_ADDR"
-             echo "    port: $SERVER_PORT"
-             echo "    uuid: $uuid"
-             echo "    udp: true"
-             echo "    tls: true"
-             echo "    network: ws"
-             echo "    ws-opts:"
-             echo "      path: /$uuid-vw"
-             echo "      headers:"
-             echo "        Host: $ARGO_HOST"
-        fi
-    fi
-    echo "==================================================================="
-}
+# --- 9. 核心 List 逻辑 (JQ 重构版) ---
 
 cmd_list() {
     get_ip
-    [ ! -f "$CONF_DIR/uuid" ] && { echo "❌ 请先安装"; exit 1; }
-    uuid=$(cat "$CONF_DIR/uuid" | tr -d '\n\r ')
-    
     echo ""
-    echo "================ [Argosbx 净化版 v3.3] ================"
-    echo "  UUID: $uuid"
-    echo "  IP:   $server_ip"
-    [ -n "$WARP_MODE" ] && echo "  WARP: ✅ 开启"
-    if [ -n "$ARGO_MODE" ]; then
-        echo "  Argo: ✅ 开启 ($ARGO_MODE)"
-        if [ -z "$ARGO_AUTH" ]; then
-            ARGO_URL=$(journalctl -u argo-clean -n 20 --no-pager | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1)
-            echo "  域名: ${ARGO_URL:-获取中...}"
+    echo "================ [Argosbx 净化版 v3.5] ================"
+    echo "  IP: $server_ip"
+    
+    # --- Argo 信息预处理 ---
+    ARGO_URL=""
+    if systemctl is-active --quiet argo-clean; then
+        echo "  Argo: ✅ 运行中"
+        if [ -n "$ARGO_DOMAIN" ]; then
+            ARGO_URL="$ARGO_DOMAIN"
         else
-            echo "  域名: ${ARGO_DOMAIN:-固定隧道}"
+            ARGO_URL=$(journalctl -u argo-clean -n 20 --no-pager | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1 | sed 's/https:\/\///')
         fi
+        [ -n "$ARGO_URL" ] && echo "  域名: $ARGO_URL"
     fi
     echo "------------------------ [v2rayN / 标准链接] ------------------------"
-    if [ -f "$CONF_DIR/port_vl_re" ]; then
-        P_PK=$(cat "$CONF_DIR/xrk/public_key" | tr -d '\n\r ')
-        P_SID=$(cat "$CONF_DIR/xrk/short_id" | tr -d '\n\r ')
-        echo "🔥 [Reality] vless://$uuid@$server_ip:$(cat $CONF_DIR/port_vl_re)?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$(cat $CONF_DIR/ym_vl_re)&fp=chrome&pbk=$P_PK&sid=$P_SID&type=tcp&headerType=none#Clean-Reality"
+
+    # --- 解析 Xray 配置 (基于 config.json) ---
+    if [ -f "$CONF_DIR/xr.json" ]; then
+        # 遍历所有 inbounds
+        # 使用 base64 避免换行符导致的 jq 遍历错误
+        for row in $(jq -r '.inbounds[] | @base64' "$CONF_DIR/xr.json"); do
+            _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
+            
+            PROTO=$(_jq '.protocol')
+            TAG=$(_jq '.tag')
+            PORT=$(_jq '.port')
+            
+            # 1. Reality
+            if [[ "$TAG" == "vless-reality" ]]; then
+                UUID=$(_jq '.settings.clients[0].id')
+                SNI=$(_jq '.streamSettings.realitySettings.serverNames[0]')
+                SID=$(_jq '.streamSettings.realitySettings.shortIds[0]')
+                # 核心：直接用私钥反推公钥，不再依赖安装时的变量
+                PRI_KEY=$(_jq '.streamSettings.realitySettings.privateKey')
+                PUB_KEY=$("$BIN_DIR/xray" x25519 -i "$PRI_KEY" | grep "Public Key" | cut -d: -f2 | tr -d ' \n\r')
+                
+                echo "🔥 [Reality] vless://$UUID@$raw_ip:$PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SID&type=tcp&headerType=none#Clean-Reality"
+                
+                # 缓存给 OpenClash 用
+                REALITY_OC="  - name: Clean-Reality\n    type: vless\n    server: $raw_ip\n    port: $PORT\n    uuid: $UUID\n    network: tcp\n    tls: true\n    udp: true\n    flow: xtls-rprx-vision\n    servername: $SNI\n    reality-opts:\n      public-key: $PUB_KEY\n      short-id: $SID\n    client-fingerprint: chrome"
+            fi
+            
+            # 2. VMess-WS (自动适配 Argo)
+            if [[ "$TAG" == "vmess-ws" ]]; then
+                UUID=$(_jq '.settings.clients[0].id')
+                PATH_VAL=$(_jq '.streamSettings.wsSettings.path')
+                
+                if [ -n "$ARGO_URL" ]; then
+                    # Argo 链接
+                    vm_json="{\"v\":\"2\",\"ps\":\"Clean-VMess-Argo\",\"add\":\"$ARGO_URL\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$ARGO_URL\",\"path\":\"$PATH_VAL\",\"tls\":\"tls\",\"sni\":\"$ARGO_URL\"}"
+                    echo "🌀 [VMess-Argo] vmess://$(echo -n "$vm_json" | base64 -w 0)"
+                    
+                    VMESS_OC="  - name: Clean-VMess-Argo\n    type: vmess\n    server: $ARGO_URL\n    port: 443\n    uuid: $UUID\n    alterId: 0\n    cipher: auto\n    udp: true\n    tls: true\n    skip-cert-verify: false\n    network: ws\n    ws-opts:\n      path: $PATH_VAL\n      headers:\n        Host: $ARGO_URL"
+                else
+                    # 普通链接
+                    vm_json="{\"v\":\"2\",\"ps\":\"Clean-VMess\",\"add\":\"$raw_ip\",\"port\":\"$PORT\",\"id\":\"$UUID\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"www.bing.com\",\"path\":\"$PATH_VAL\",\"tls\":\"\"}"
+                    echo "🌀 [VMess] vmess://$(echo -n "$vm_json" | base64 -w 0)"
+                    
+                    VMESS_OC="  - name: Clean-VMess\n    type: vmess\n    server: $raw_ip\n    port: $PORT\n    uuid: $UUID\n    alterId: 0\n    cipher: auto\n    udp: true\n    tls: false\n    network: ws\n    ws-opts:\n      path: $PATH_VAL\n      headers:\n        Host: www.bing.com"
+                fi
+            fi
+        done
     fi
-    [ -f "$CONF_DIR/port_hy2" ] && echo "🚀 [Hysteria2] hysteria2://$uuid@$server_ip:$(cat $CONF_DIR/port_hy2)?security=tls&alpn=h3&insecure=1&sni=www.bing.com#Clean-Hy2"
-    
-    if [ -f "$CONF_DIR/port_vm_ws" ]; then
-       if [ -n "$ARGO_MODE" ]; then
-          HOST_ADDR=${ARGO_URL:-$ARGO_DOMAIN}
-          HOST_ADDR=$(echo $HOST_ADDR | sed 's/https:\/\///')
-          vm_json="{\"v\":\"2\",\"ps\":\"Clean-VMess-Argo\",\"add\":\"$HOST_ADDR\",\"port\":\"443\",\"id\":\"$uuid\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$HOST_ADDR\",\"path\":\"/$uuid-vm\",\"tls\":\"tls\",\"sni\":\"$HOST_ADDR\"}"
-       else
-          vm_json="{\"v\":\"2\",\"ps\":\"Clean-VMess\",\"add\":\"$server_ip\",\"port\":\"$(cat $CONF_DIR/port_vm_ws)\",\"id\":\"$uuid\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"www.bing.com\",\"path\":\"/$uuid-vm\",\"tls\":\"\"}"
-       fi
-       echo "🌀 [VMess] vmess://$(echo -n "$vm_json" | base64 -w 0)"
+
+    # --- 解析 Sing-box 配置 (基于 config.json) ---
+    if [ -f "$CONF_DIR/sb.json" ]; then
+        for row in $(jq -r '.inbounds[] | @base64' "$CONF_DIR/sb.json"); do
+            _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
+            TYPE=$(_jq '.type')
+            
+            # 3. Hysteria2
+            if [[ "$TYPE" == "hysteria2" ]]; then
+                PORT=$(_jq '.listen_port')
+                PASS=$(_jq '.users[0].password')
+                echo "🚀 [Hysteria2] hysteria2://$PASS@$raw_ip:$PORT?security=tls&alpn=h3&insecure=1&sni=www.bing.com#Clean-Hy2"
+                
+                HY2_OC="  - name: Clean-Hy2\n    type: hysteria2\n    server: $raw_ip\n    port: $PORT\n    password: $PASS\n    sni: www.bing.com\n    skip-cert-verify: true\n    alpn:\n      - h3"
+            fi
+        done
     fi
-    
-    print_clash_meta
+
+    echo ""
+    echo "================ [Clash Meta / OpenClash 格式配置] ================"
+    echo "proxies:"
+    echo -e "$REALITY_OC"
+    echo -e "$HY2_OC"
+    echo -e "$VMESS_OC"
+    echo "==================================================================="
 }
 
 cmd_uninstall() {
@@ -556,7 +528,7 @@ case "$1" in
         cmd_list
         ;;
     *)
-        echo ">>> 开始安装 Argosbx 净化版 v3.3..."
+        echo ">>> 开始安装 Argosbx 净化版 v3.5..."
         configure_argo_if_needed
         configure_warp_if_needed
         download_core
