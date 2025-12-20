@@ -1,9 +1,8 @@
 #!/bin/bash
 
 # ==============================================================================
-# Argosbx 终极净化·WARP增强版 (v3.0)
-# 功能：Install | List | Del | Upx/Ups | Res | Rep
-# 特性：官方源内核 | 自动生成/计算WARP信息(含Reserved) | 注册工具用完即焚
+# Argosbx 终极净化版 v2.0 (Refactored by Gemini)
+# 核心逻辑：参数驱动 -> 按需触发WARP配置 -> 官方源安装 -> 纯净运行
 # ==============================================================================
 
 # --- 1. 全局配置 ---
@@ -13,13 +12,14 @@ BIN_DIR="$WORKDIR/bin"
 CONF_DIR="$WORKDIR/conf"
 SCRIPT_PATH="$WORKDIR/agsbx.sh"
 
-# --- 2. 变量映射 (WebUI & 自定义参数) ---
-# 代理协议变量
+# --- 2. 变量映射 (兼容 WebUI 参数) ---
+# 协议开关
 [ -z "${vlpt+x}" ] || vlp=yes
 [ -z "${vmpt+x}" ] || { vmp=yes; vmag=yes; }
 [ -z "${hypt+x}" ] || hyp=yes
 [ -z "${tupt+x}" ] || tup=yes
-# 导出变量
+
+# 核心变量
 export uuid=${uuid:-''}
 export port_vl_re=${vlpt:-''}
 export port_vm_ws=${vmpt:-''}
@@ -27,25 +27,28 @@ export port_hy2=${hypt:-''}
 export port_tu=${tupt:-''}
 export ym_vl_re=${reym:-''}
 
-# WARP 变量 (用户可手动通过环境变量传入，也可由脚本自动生成)
-export WP_KEY=${wpkey:-''}      # PrivateKey
-export WP_IP=${wpip:-''}        # IPv6 or IPv4 Internal
-export WP_RES=${wpres:-''}      # Reserved [x,y,z]
+# WARP 开关 (WebUI 传入 warp=s4, warp=x6, warp=yes 等)
+# 兼容 wap 变量名
+export WARP_MODE=${warp:-${wap:-''}}
 
-# --- 3. 核心工具函数 ---
+# WARP 账户信息 (可手动传入，也可脚本生成)
+export WP_KEY=${wpkey:-''}
+export WP_IP=${wpip:-''}
+export WP_RES=${wpres:-''}
+
+# --- 3. 基础检查 ---
 
 check_env() {
-    # 架构判断
     ARCH=$(uname -m)
     case "$ARCH" in
         x86_64) XRAY_ARCH="64"; SB_ARCH="amd64"; WGCF_ARCH="amd64" ;;
         aarch64) XRAY_ARCH="arm64-v8a"; SB_ARCH="arm64"; WGCF_ARCH="arm64" ;;
-        *) echo "❌ 不支持的架构: $ARCH"; exit 1 ;;
+        *) echo "❌ 不支持的 CPU 架构: $ARCH"; exit 1 ;;
     esac
     
-    # 依赖检查 (新增 python3 用于计算 Reserved)
+    # 基础依赖
     if ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-        echo "📦 安装必要依赖 (curl, python3, etc)..."
+        echo "📦 安装必要依赖 (curl, wget, unzip, tar, python3)..."
         if [ -f /etc/debian_version ]; then
             sudo apt-get update -y && sudo apt-get install -y curl wget tar unzip socat python3
         elif [ -f /etc/redhat-release ]; then
@@ -62,90 +65,110 @@ get_ip() {
     [[ "$server_ip" =~ : ]] && server_ip="[$server_ip]"
 }
 
-# --- 4. WARP 注册与处理模块 (核心新增) ---
+# --- 4. WARP 逻辑 (核心修改点) ---
 
-register_warp() {
-    # 如果变量已存在，说明用户手动提供了，直接跳过
-    if [ -n "$WP_KEY" ]; then
-        echo "✅ 检测到环境变量中已包含 WARP 信息，使用现有信息。"
-        return
+configure_warp_if_needed() {
+    # 1. 检查是否需要开启 WARP
+    if [ -z "$WARP_MODE" ]; then
+        return # 参数中没有 warp=...，直接返回，不打扰用户
     fi
 
     echo ""
     echo "================================================================"
-    echo " ☁️  Cloudflare WARP 免费账号配置"
+    echo " ☁️  检测到 WARP 启用参数: warp=$WARP_MODE"
     echo "----------------------------------------------------------------"
-    echo " 系统检测到你未提供 WARP 密钥。"
-    echo " 脚本可以临时下载工具帮你注册一个全新账号，并提取关键的 Reserved 值。"
-    echo " ⚠️  注意：注册工具仅在当前运行，获取信息后会自动删除，不会残留。"
-    echo "================================================================"
-    read -p " 是否自动生成 WARP 注册信息？(y/n) [默认y]: " choice
-    choice=${choice:-y}
 
-    if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
-        echo "⬇️ 正在下载 wgcf 注册工具..."
-        wget -qO wgcf https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_${WGCF_ARCH}
-        chmod +x wgcf
+    # 2. 检查是否已经有账户信息 (通过环境变量传入)
+    if [ -n "$WP_KEY" ] && [ -n "$WP_IP" ] && [ -n "$WP_RES" ]; then
+        echo "✅ 检测到完整的 WARP 账户变量，直接使用。"
+        return
+    fi
 
-        echo "📝 正在注册 WARP 账号..."
-        if ! ./wgcf register --accept-tos >/dev/null 2>&1; then
-            echo "❌ WARP 注册失败 (可能是 CF 接口限制)，将跳过 WARP 配置。"
-            rm -f wgcf wgcf-account.toml
-            return
-        fi
+    # 3. 交互菜单
+    echo " ⚠️  未检测到 WARP 账户信息 (PrivateKey/IP/Reserved)。"
+    echo " 请选择获取方式："
+    echo " 1) 自动生成新账户 (使用官方 wgcf 工具，用完即焚)"
+    echo " 2) 手动输入现有信息 (PrivateKey, Internal IP, Reserved)"
+    echo " 3) 放弃 WARP (仅安装普通节点)"
+    echo "----------------------------------------------------------------"
+    read -p " 请输入数字 [1-3]: " choice
 
-        echo "⚙️ 正在生成配置文件..."
-        ./wgcf generate >/dev/null 2>&1
+    case "$choice" in
+        1)
+            auto_register_warp
+            ;;
+        2)
+            manual_input_warp
+            ;;
+        *)
+            echo "🚫 已取消 WARP 配置。"
+            WARP_MODE="" # 清空模式，后续不生成配置
+            ;;
+    esac
+}
 
-        # --- 提取信息 ---
-        echo "🔍 正在提取关键参数..."
-        
-        # 1. 提取 PrivateKey
-        WP_KEY=$(grep 'PrivateKey' wgcf-profile.conf | cut -d ' ' -f 3)
-        
-        # 2. 提取 Address (优先取 IPv6, 如果没有取 IPv4)
-        # wgcf-profile 通常格式: Address = 172.16.0.2/32, 2606:4700.../128
-        # 我们取逗号后的 IPv6，如果没有逗号，取第一个
-        RAW_ADDR=$(grep 'Address' wgcf-profile.conf | cut -d '=' -f 2 | tr -d ' ')
-        if [[ "$RAW_ADDR" == *","* ]]; then
-            WP_IP=$(echo "$RAW_ADDR" | awk -F',' '{print $2}' | cut -d'/' -f1)
-        else
-            WP_IP=$(echo "$RAW_ADDR" | cut -d'/' -f1)
-        fi
-        
-        # 3. 计算 Reserved (通过 Python 解码 wgcf-account.toml 中的 client_id)
-        # client_id 是 Base64，Reserved 是其前3个字节的十进制表示
-        CLIENT_ID=$(grep "client_id" wgcf-account.toml | cut -d '"' -f 2)
-        if [ -n "$CLIENT_ID" ]; then
-            WP_RES=$(python3 -c "import base64; d=base64.b64decode('${CLIENT_ID}'); print(f'[{d[0]}, {d[1]}, {d[2]}]')")
-        else
-            WP_RES=""
-        fi
-
-        # --- 展示并保存信息 ---
-        echo ""
-        echo "################################################################"
-        echo "🎉 WARP 账号获取成功！请务必保存以下信息！"
-        echo "----------------------------------------------------------------"
-        echo "🔴 PrivateKey (私钥):  $WP_KEY"
-        echo "🔵 Internal IP (内网): $WP_IP"
-        echo "🟣 Reserved (保留值):  $WP_RES"
-        echo "----------------------------------------------------------------"
-        echo "💡 提示：如果未来重装，你可以使用 'wpkey=... wpip=... wpres=... ./install.sh' 直接使用此账号。"
-        echo "################################################################"
-        echo "按回车键继续安装..."
-        read
-
-        # --- 清理残留 ---
-        echo "🧹 清理注册工具及临时文件..."
-        rm -f wgcf wgcf-account.toml wgcf-profile.conf
-        echo "✅ 清理完成"
-    else
-        echo "🚫 已跳过 WARP 配置（仅安装单栈节点）。"
+manual_input_warp() {
+    echo ""
+    echo "📝 请输入 WARP 信息："
+    read -p " > PrivateKey (私钥): " WP_KEY
+    read -p " > Internal IP (例如 172.16.0.2 或 2606:...): " WP_IP
+    read -p " > Reserved (格式如 [1,2,3]): " WP_RES
+    
+    # 简单校验
+    if [ -z "$WP_KEY" ] || [ -z "$WP_IP" ] || [ -z "$WP_RES" ]; then
+        echo "❌ 信息不完整，跳过 WARP 配置。"
+        WARP_MODE=""
     fi
 }
 
-# --- 5. 核心下载与配置生成 ---
+auto_register_warp() {
+    echo "⬇️ 正在下载 wgcf 注册工具..."
+    wget -qO wgcf https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_${WGCF_ARCH}
+    chmod +x wgcf
+
+    echo "📝 正在注册 WARP 账号..."
+    if ! ./wgcf register --accept-tos >/dev/null 2>&1; then
+        echo "❌ WARP 注册失败 (可能是 CF 接口限制)。"
+        rm -f wgcf wgcf-account.toml
+        WARP_MODE=""
+        return
+    fi
+
+    ./wgcf generate >/dev/null 2>&1
+
+    echo "🔍 正在提取参数..."
+    WP_KEY=$(grep 'PrivateKey' wgcf-profile.conf | cut -d ' ' -f 3)
+    
+    # 提取 IP (优先取 IPv6, 没有则 IPv4)
+    RAW_ADDR=$(grep 'Address' wgcf-profile.conf | cut -d '=' -f 2 | tr -d ' ')
+    if [[ "$RAW_ADDR" == *","* ]]; then
+        WP_IP=$(echo "$RAW_ADDR" | awk -F',' '{print $2}' | cut -d'/' -f1)
+    else
+        WP_IP=$(echo "$RAW_ADDR" | cut -d'/' -f1)
+    fi
+    
+    # 计算 Reserved
+    CLIENT_ID=$(grep "client_id" wgcf-account.toml | cut -d '"' -f 2)
+    if [ -n "$CLIENT_ID" ]; then
+        WP_RES=$(python3 -c "import base64; d=base64.b64decode('${CLIENT_ID}'); print(f'[{d[0]}, {d[1]}, {d[2]}]')")
+    else
+        WP_RES="[]"
+    fi
+
+    echo ""
+    echo "################ [请务必保存以下信息] ################"
+    echo " PrivateKey: $WP_KEY"
+    echo " Internal IP: $WP_IP"
+    echo " Reserved:   $WP_RES"
+    echo "######################################################"
+    echo "按回车键继续..."
+    read
+
+    # 清理残留
+    rm -f wgcf wgcf-account.toml wgcf-profile.conf
+}
+
+# --- 5. 核心安装与配置 ---
 
 download_core() {
     # Xray
@@ -156,6 +179,9 @@ download_core() {
         unzip -o "$WORKDIR/xray.zip" -d "$WORKDIR/temp_xray" >/dev/null
         mv "$WORKDIR/temp_xray/xray" "$BIN_DIR/xray"
         chmod +x "$BIN_DIR/xray"
+        # 确保 geo 文件存在
+        mv "$WORKDIR/temp_xray/geoip.dat" "$BIN_DIR/" 2>/dev/null
+        mv "$WORKDIR/temp_xray/geosite.dat" "$BIN_DIR/" 2>/dev/null
         rm -rf "$WORKDIR/xray.zip" "$WORKDIR/temp_xray"
     fi
     # Sing-box
@@ -178,8 +204,9 @@ generate_config() {
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
 
-    # 证书与Key
+    # 证书
     [ ! -f "$CONF_DIR/cert.pem" ] && { openssl ecparam -genkey -name prime256v1 -out "$CONF_DIR/private.key"; openssl req -new -x509 -days 36500 -key "$CONF_DIR/private.key" -out "$CONF_DIR/cert.pem" -subj "/CN=www.bing.com"; }
+    
     mkdir -p "$CONF_DIR/xrk"
     if [ ! -f "$CONF_DIR/xrk/private_key" ]; then
         key_pair=$("$BIN_DIR/xray" x25519)
@@ -190,16 +217,25 @@ generate_config() {
 
     # --- WARP 参数处理 ---
     ENABLE_WARP=false
-    if [ -n "$WP_KEY" ] && [ -n "$WP_IP" ] && [ -n "$WP_RES" ]; then
+    if [ -n "$WARP_MODE" ] && [ -n "$WP_KEY" ]; then
         ENABLE_WARP=true
-        # 构建 Address 字符串
+        # 地址格式化
         if [[ "$WP_IP" =~ .*:.* ]]; then
+             # IPv6
              WARP_ADDR_X="\"172.16.0.2/32\", \"${WP_IP}/128\""
              WARP_ADDR_S="\"172.16.0.2/32\", \"${WP_IP}/128\""
         else
+             # IPv4
              WARP_ADDR_X="\"${WP_IP}/32\", \"2606:4700:110:8d8d:1845:c39f:2dd5:a03a/128\""
              WARP_ADDR_S="\"${WP_IP}/32\", \"2606:4700:110:8d8d:1845:c39f:2dd5:a03a/128\""
         fi
+
+        # 路由策略判定
+        ROUTE_V4=false; ROUTE_V6=false
+        [[ "$WARP_MODE" == *"4"* ]] && ROUTE_V4=true
+        [[ "$WARP_MODE" == *"6"* ]] && ROUTE_V6=true
+        # 默认兜底：接管 IPv4
+        if [ "$ROUTE_V4" = false ] && [ "$ROUTE_V6" = false ]; then ROUTE_V4=true; fi
     fi
 
     # ================= XRAY JSON =================
@@ -239,9 +275,10 @@ EOF
 EOF
     if [ "$ENABLE_WARP" = true ]; then
         cat >> "$CONF_DIR/xr.json" <<EOF
-      { "type": "field", "ip": [ "0.0.0.0/0" ], "outboundTag": "warp-out" },
-      { "type": "field", "domain": [ "geosite:openai", "geosite:netflix", "geosite:google" ], "outboundTag": "warp-out" },
+      { "type": "field", "domain": [ "geosite:openai", "geosite:netflix", "geosite:google", "geosite:disney" ], "outboundTag": "warp-out" },
 EOF
+        if [ "$ROUTE_V4" = true ]; then echo '      { "type": "field", "ip": [ "0.0.0.0/0" ], "outboundTag": "warp-out" },' >> "$CONF_DIR/xr.json"; fi
+        if [ "$ROUTE_V6" = true ]; then echo '      { "type": "field", "ip": [ "::/0" ], "outboundTag": "warp-out" },' >> "$CONF_DIR/xr.json"; fi
     fi
     cat >> "$CONF_DIR/xr.json" <<EOF
       { "type": "field", "outboundTag": "direct", "port": "0-65535" } ] } }
@@ -284,16 +321,17 @@ EOF
 EOF
     if [ "$ENABLE_WARP" = true ]; then
         cat >> "$CONF_DIR/sb.json" <<EOF
-      { "ip_cidr": [ "0.0.0.0/0" ], "outbound": "warp-out" },
-      { "geosite": [ "openai", "netflix", "google" ], "outbound": "warp-out" },
+      { "geosite": [ "openai", "netflix", "google", "disney" ], "outbound": "warp-out" },
 EOF
+        if [ "$ROUTE_V4" = true ]; then echo '      { "ip_cidr": [ "0.0.0.0/0" ], "outbound": "warp-out" },' >> "$CONF_DIR/sb.json"; fi
+        if [ "$ROUTE_V6" = true ]; then echo '      { "ip_cidr": [ "::/0" ], "outbound": "warp-out" },' >> "$CONF_DIR/sb.json"; fi
     fi
     cat >> "$CONF_DIR/sb.json" <<EOF
       { "port": [0, 65535], "outbound": "direct" } ] } }
 EOF
 }
 
-# --- 6. 服务与快捷方式 ---
+# --- 6. 系统服务 ---
 
 setup_services() {
     USER_NAME=$(whoami)
@@ -338,16 +376,17 @@ setup_shortcut() {
     sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx
 }
 
-# --- 7. 指令功能 ---
+# --- 7. 命令管理 ---
 
 cmd_list() {
     [ ! -f "$CONF_DIR/uuid" ] && { echo "❌ 请先安装"; exit 1; }
     get_ip
     uuid=$(cat "$CONF_DIR/uuid")
     echo ""
-    echo "================ [Argosbx 净化·WARP版] ================"
+    echo "================ [Argosbx 净化版 v2.0] ================"
     echo "  UUID: $uuid"
-    echo "  IP:   $server_ip (若开启WARP则显示WARP IP)"
+    echo "  IP:   $server_ip"
+    [ -n "$WARP_MODE" ] && echo "  WARP: 开启 (模式: ${WARP_MODE:-默认})"
     echo "------------------------------------------------------"
     [ -f "$CONF_DIR/port_vl_re" ] && echo "🔥 [Reality] vless://$uuid@$server_ip:$(cat $CONF_DIR/port_vl_re)?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$(cat $CONF_DIR/ym_vl_re)&fp=chrome&pbk=$(cat $CONF_DIR/xrk/public_key)&sid=$(cat $CONF_DIR/xrk/short_id)&type=tcp&headerType=none#Clean-Reality"
     [ -f "$CONF_DIR/port_hy2" ] && echo "🚀 [Hysteria2] hysteria2://$uuid@$server_ip:$(cat $CONF_DIR/port_hy2)?security=tls&alpn=h3&insecure=1&sni=www.bing.com#Clean-Hy2"
@@ -355,7 +394,7 @@ cmd_list() {
     echo "======================================================"
 }
 
-# --- 8. 入口 ---
+# --- 8. 入口逻辑 ---
 
 if [[ -z "$1" ]] || [[ "$1" == "rep" ]]; then
     check_env
@@ -377,16 +416,15 @@ case "$1" in
     ups)  check_env && rm -f "$BIN_DIR/sing-box" && download_core && restart_services && echo "✅ Sing-box 升级完成" ;;
     rep)
         echo "♻️ 重置配置..."
-        # 仅删除配置，保留二进制文件
         rm -rf "$CONF_DIR"/*.json "$CONF_DIR"/port*
-        register_warp # 重新检测或询问WARP
+        configure_warp_if_needed # 重新检测 WARP 需求
         generate_config
         restart_services
         cmd_list
         ;;
     *)
-        echo ">>> 开始安装 Argosbx 净化·WARP版..."
-        register_warp # 核心：询问或生成 WARP
+        echo ">>> 开始安装 Argosbx 净化版 v2.0..."
+        configure_warp_if_needed # 核心：按需触发 WARP 配置
         download_core
         generate_config
         setup_services
