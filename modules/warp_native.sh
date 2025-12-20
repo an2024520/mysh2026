@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ============================================================
-#  Native WARP 增强模块 (Clean & Pure)
-#  - 移除所有原作者硬编码 IP，确保纯净
-#  - 支持 Xray/Sing-box 内核直连
+#  Native WARP 增强模块 (Clean & Pure Edition)
+#  - 无需 Wireproxy，由 Xray 内核直接连接 Cloudflare
+#  - 纯净模式：移除所有硬编码共享 IP，确保独享与安全
 # ============================================================
 
-# --- 1. 全局变量与路径 ---
+# --- 1. 全局配置 (与 xray_core.sh 严格配套) ---
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 WARP_CONF_FILE="/etc/my_script/warp_native.conf"
 mkdir -p "$(dirname "$WARP_CONF_FILE")"
@@ -17,9 +17,11 @@ GREEN='\033[0;32m'
 YELLOW='\033[33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
+GRAY='\033[0;37m'
 
-# --- 2. 基础依赖检查 ---
+# --- 2. 依赖检查 ---
 check_dependencies() {
+    # jq 是修改 config.json 的核心工具，xray_core.sh 通常已安装
     if ! command -v jq >/dev/null 2>&1; then
         echo -e "${YELLOW}正在安装 jq (JSON处理工具)...${PLAIN}"
         if [ -f /etc/debian_version ]; then
@@ -28,8 +30,9 @@ check_dependencies() {
             yum install -y jq
         fi
     fi
+    # python3 用于计算 Reserved 值
     if ! command -v python3 >/dev/null 2>&1; then
-        echo -e "${YELLOW}正在安装 Python3 (用于计算 WARP Reserved)...${PLAIN}"
+        echo -e "${YELLOW}正在安装 Python3...${PLAIN}"
         if [ -f /etc/debian_version ]; then
             apt-get update && apt-get install -y python3
         elif [ -f /etc/redhat-release ]; then
@@ -68,7 +71,7 @@ get_warp_credentials() {
         local tmp_dir=$(mktemp -d)
         pushd "$tmp_dir" >/dev/null || return
 
-        # 下载官方 wgcf (来自 ViRb3 仓库，开源安全)
+        # 下载官方 wgcf (安全可靠)
         wget -qO wgcf "https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_${wgcf_arch}"
         chmod +x wgcf
         
@@ -85,7 +88,7 @@ get_warp_credentials() {
         # 提取 PrivateKey
         wp_key=$(grep 'PrivateKey' wgcf-profile.conf | cut -d ' ' -f 3 | tr -d '\n\r ')
         
-        # 提取 Address (自动获取 Cloudflare 分配的唯一 v6 地址)
+        # 提取 Address (自动获取 Cloudflare 分配给你的唯一 v6 地址)
         local raw_addr=$(grep 'Address' wgcf-profile.conf | cut -d '=' -f 2 | tr -d ' ')
         if [[ "$raw_addr" == *","* ]]; then
             wp_ip=$(echo "$raw_addr" | awk -F',' '{print $2}' | cut -d'/' -f1 | tr -d '\n\r ')
@@ -93,7 +96,7 @@ get_warp_credentials() {
             wp_ip=$(echo "$raw_addr" | cut -d'/' -f1 | tr -d '\n\r ')
         fi
 
-        # 提取 Reserved
+        # 提取 Reserved (Python 算法)
         local client_id=$(grep "client_id" wgcf-account.toml | cut -d '"' -f 2)
         if [ -n "$client_id" ]; then
             wp_res=$(python3 -c "import base64; d=base64.b64decode('${client_id}'); print(f'[{d[0]}, {d[1]}, {d[2]}]')")
@@ -143,7 +146,7 @@ generate_warp_outbound() {
     if [ ! -f "$WARP_CONF_FILE" ]; then return 1; fi
     source "$WARP_CONF_FILE"
 
-    # 172.16.0.2 是 WARP 接口的标准内网 IPv4，必须保留
+    # 172.16.0.2 是 WARP 接口的标准内网 IPv4，这是协议固定值，无需修改
     local addr_json="\"172.16.0.2/32\", \"${WP_IP}/128\""
 
     cat <<EOF
@@ -173,12 +176,12 @@ apply_warp_config() {
     local mode="$1"
     local extra_arg="$2"
 
-    if [ ! -f "$XRAY_CONFIG" ]; then echo -e "${RED}未找到 Xray 配置文件！${PLAIN}"; return; fi
+    if [ ! -f "$XRAY_CONFIG" ]; then echo -e "${RED}未找到 Xray 配置文件！请先安装核心并添加节点。${PLAIN}"; return; fi
     if [ ! -f "$WARP_CONF_FILE" ]; then echo -e "${RED}请先配置 WARP 账号！${PLAIN}"; return; fi
 
     echo -e "${YELLOW}正在修改 Xray 配置...${PLAIN}"
 
-    # 1. 清理旧配置
+    # 1. 清理旧配置 (原子操作)
     jq 'del(.outbounds[] | select(.tag=="warp-out"))' "$XRAY_CONFIG" > "${XRAY_CONFIG}.tmp" && mv "${XRAY_CONFIG}.tmp" "$XRAY_CONFIG"
     jq 'del(.routing.rules[] | select(.outboundTag=="warp-out"))' "$XRAY_CONFIG" > "${XRAY_CONFIG}.tmp" && mv "${XRAY_CONFIG}.tmp" "$XRAY_CONFIG"
 
@@ -190,7 +193,7 @@ apply_warp_config() {
     local rule_json=""
     case "$mode" in
         "stream")
-            # 模式一：智能分流
+            # 模式一：智能分流 (流媒体 + AI)
             rule_json='{
                 "type": "field",
                 "outboundTag": "warp-out",
@@ -215,7 +218,7 @@ apply_warp_config() {
             ;;
     esac
 
-    # 4. 注入路由规则
+    # 4. 注入路由规则 (优先级最高，插到最前)
     if [ -n "$rule_json" ]; then
         jq --argjson new_rule "$rule_json" '.routing.rules = [$new_rule] + .routing.rules' "$XRAY_CONFIG" > "${XRAY_CONFIG}.tmp" && mv "${XRAY_CONFIG}.tmp" "$XRAY_CONFIG"
     fi
@@ -227,9 +230,8 @@ apply_warp_config() {
     if systemctl is-active --quiet xray; then
         echo -e "${GREEN}Native WARP 模式已生效！${PLAIN}"
     else
-        echo -e "${RED}Xray 重启失败，请检查配置。${PLAIN}"
-        # 回滚尝试 (简单删除 warp 块)
-        # disable_warp
+        echo -e "${RED}Xray 重启失败，请检查日志 (journalctl -u xray -e)。${PLAIN}"
+        echo -e "${YELLOW}可能是 Reserved 值不正确，或 IP 被 Cloudflare 拒绝。${PLAIN}"
     fi
 }
 
@@ -250,10 +252,11 @@ select_nodes_interactive() {
     if [ ! -f "$XRAY_CONFIG" ]; then echo "无配置文件"; return; fi
     
     echo -e "${SKYBLUE}正在读取当前节点列表...${PLAIN}"
+    # 使用 jq 提取 index, tag, port, protocol
     local node_list=$(jq -r '.inbounds[] | "\(.tag)|\(.port)|\(.protocol)"' "$XRAY_CONFIG" | nl -w 2 -s " ")
     
     if [ -z "$node_list" ]; then
-        echo -e "${RED}未找到任何入站节点。${PLAIN}"; return
+        echo -e "${RED}未找到任何入站节点。请先去【节点管理】添加节点。${PLAIN}"; return
     fi
 
     echo -e "------------------------------------------------"
@@ -286,7 +289,7 @@ select_nodes_interactive() {
     fi
 }
 
-# --- 8. 主菜单 ---
+# --- 8. 主菜单入口 ---
 show_warp_menu() {
     check_dependencies
     while true; do
@@ -359,5 +362,5 @@ show_warp_menu() {
     done
 }
 
-# 脚本入口
+# 脚本直接执行入口 (方便 menu.sh 调用)
 show_warp_menu
