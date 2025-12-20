@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#1 ==============================================================================
-# Argosbx 终极净化版 v3.1 (Refactored by Gemini)
+# ==============================================================================
+# Argosbx 终极净化版 v3.2 (Refactored by Gemini)
 # 修复日志：
-# v3.1: 修复UUID文件被清空BUG | 强力清除原版 $HOME/bin 残留 | 移除冗余逻辑
-# v3.0: 目录隔离与OpenClash支持
+# v3.2: 🚨 修复关键的目录创建路径错误 (xrk) | 刷新Shell缓存 | 增强依赖检测
+# v3.1: 修复UUID逻辑
 # ==============================================================================
 
 # --- 1. 全局配置 ---
@@ -15,7 +15,7 @@ CONF_DIR="$WORKDIR/conf"
 SCRIPT_PATH="$WORKDIR/agsbx_pure.sh"
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
-# ⚠️ [重要] 如果你是 fork 使用，请修改此 URL；如果是本地文件运行，可忽略。
+# ⚠️ 快捷指令自更新地址 (本地文件运行可忽略)
 SELF_URL="https://raw.githubusercontent.com/an2024520/test/main/Argosbx_Pure.sh"
 
 # --- 2. 变量映射 ---
@@ -42,12 +42,13 @@ export ARGO_MODE=${argo:-''}
 export ARGO_AUTH=${agk:-${token:-''}}
 export ARGO_DOMAIN=${agn:-''}
 
-# --- 3. 核心初始化 (修复 UUID 逻辑) ---
+# --- 3. 核心初始化 (修复目录路径) ---
 
 init_variables() {
-    mkdir -p "$BIN_DIR" "$CONF_DIR" "$WORKDIR/xrk"
+    # 🚨 修复点：确保 xrk 目录是在 conf 目录下创建
+    mkdir -p "$BIN_DIR" "$CONF_DIR" "$CONF_DIR/xrk"
     
-    # 1. UUID 生成 (这是唯一生成源，确保正确)
+    # 1. UUID 生成
     if [ -z "$uuid" ]; then
         if [ -f "$CONF_DIR/uuid" ]; then
             uuid=$(cat "$CONF_DIR/uuid")
@@ -58,8 +59,7 @@ init_variables() {
     else
         echo "$uuid" > "$CONF_DIR/uuid"
     fi
-    # 再次读取并强力清洗，防止换行符
-    uuid=$(cat "$CONF_DIR/uuid" | tr -d '\n\r ')
+    uuid=$(echo "$uuid" | tr -d '\n\r ')
 
     # 2. 证书生成
     if [ ! -f "$CONF_DIR/cert.pem" ]; then
@@ -73,23 +73,23 @@ init_variables() {
     fi
 }
 
-# --- 4. 清理原版残留 (强力杀虫) ---
+# --- 4. 清理原版残留 ---
 
 cleanup_original_bloatware() {
-    # 1. 清理 .bashrc 劫持
+    # 1. 清理 .bashrc
     if [ -f ~/.bashrc ]; then
         sed -i '/agsbx/d' ~/.bashrc
         sed -i '/yonggekkk/d' ~/.bashrc
-        # 移除原版添加的 PATH
         sed -i '/export PATH="\$HOME\/bin:\$PATH"/d' ~/.bashrc
     fi
     
-    # 2. 清理原版二进制和快捷方式 (包含隐藏的 $HOME/bin)
+    # 2. 清理二进制和路径
     rm -f /usr/local/bin/agsbx
     rm -f /usr/bin/agsbx
     rm -rf "$HOME/bin/agsbx"
+    rm -rf "$HOME/bin" # 如果为空则删除
     
-    # 3. 停止原版服务 (如果有)
+    # 3. 杀进程
     pkill -f 'agsbx/s' 2>/dev/null
     pkill -f 'agsbx/x' 2>/dev/null
     pkill -f 'agsbx/c' 2>/dev/null
@@ -98,10 +98,15 @@ cleanup_original_bloatware() {
 # --- 5. 环境检查 ---
 
 check_and_fix_network() {
+    # 增强：先尝试 update 确保能安装 curl
     if ! command -v curl >/dev/null 2>&1; then
-        if [ -f /etc/debian_version ]; then sudo apt-get update -y && sudo apt-get install -y curl; fi
-        if [ -f /etc/redhat-release ]; then sudo yum update -y && sudo yum install -y curl; fi
+        if [ -f /etc/debian_version ]; then 
+            sudo apt-get update -y && sudo apt-get install -y curl wget tar unzip socat openssl
+        elif [ -f /etc/redhat-release ]; then 
+            sudo yum update -y && sudo yum install -y curl wget tar unzip socat openssl
+        fi
     fi
+    # IPv6 DNS64 优化
     if ! curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null && curl -6 -s --connect-timeout 2 https://2606:4700:4700::1111 >/dev/null; then
         if [ ! -f "$BACKUP_DNS" ]; then
             echo " ⚠️  检测到纯 IPv6 环境，正在临时优化 DNS..."
@@ -118,11 +123,6 @@ check_dependencies() {
         aarch64) XRAY_ARCH="arm64-v8a"; SB_ARCH="arm64"; CF_ARCH="arm64"; WGCF_ARCH="arm64" ;;
         *) echo "❌ 不支持的 CPU 架构: $ARCH"; exit 1 ;;
     esac
-    if ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-        echo "📦 安装依赖..."
-        if [ -f /etc/debian_version ]; then sudo apt-get update -y && sudo apt-get install -y wget tar unzip socat python3; fi
-        if [ -f /etc/redhat-release ]; then sudo yum update -y && sudo yum install -y wget tar unzip socat python3; fi
-    fi
 }
 
 get_ip() {
@@ -187,11 +187,10 @@ download_core() {
 
 generate_config() {
     echo "⚙️ 生成配置..."
-    # 修复：移除错误的 UUID 覆盖逻辑，完全信任 init_variables 的结果
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
 
-    # Xray 密钥生成
+    # 生成 Xray 密钥 (修复路径问题)
     if [ -n "$vwp" ] || [ -n "$vlp" ]; then
         if [ "$NEED_XRAY_KEYS" = true ] || [ ! -f "$CONF_DIR/xrk/private_key" ]; then
             "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"
@@ -237,8 +236,6 @@ EOF
     if [ -n "$vlp" ] || [ -z "${vmp}${vwp}${hyp}${tup}" ]; then 
         [ -z "$port_vl_re" ] && port_vl_re=$(shuf -i 10000-65535 -n 1)
         echo "$port_vl_re" > "$CONF_DIR/port_vl_re"
-        # 补救措施：如果私钥未生成，尝试生成
-        [ ! -f "$CONF_DIR/xrk/private_key" ] && { "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"; awk '/PrivateKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/private_key"; awk '/PublicKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/public_key"; rm "$CONF_DIR/temp_key"; openssl rand -hex 4 | tr -d '\n\r ' > "$CONF_DIR/xrk/short_id"; }
         cat >> "$CONF_DIR/xr.json" <<EOF
     { "listen": "::", "port": $port_vl_re, "protocol": "vless", "settings": { "clients": [{ "id": "${uuid}", "flow": "xtls-rprx-vision" }], "decryption": "none" }, "streamSettings": { "network": "tcp", "security": "reality", "realitySettings": { "dest": "${ym_vl_re}:443", "serverNames": ["${ym_vl_re}"], "privateKey": "$(cat $CONF_DIR/xrk/private_key)", "shortIds": ["$(cat $CONF_DIR/xrk/short_id)"] } } },
 EOF
@@ -379,20 +376,19 @@ restart_services() {
 }
 
 setup_shortcut() {
-    # 修复：防止劫持逻辑
-    # 1. 如果本地有文件，复制自己
     if [[ -f "$0" ]] && [[ "$0" != "bash" ]]; then
         cp "$0" "$SCRIPT_PATH"
-    # 2. 如果是管道安装且配置了URL，下载自己
     elif [ -n "$SELF_URL" ] && [[ "$SELF_URL" == http* ]]; then
         wget -qO "$SCRIPT_PATH" "$SELF_URL"
     else
-        # 3. 实在不行，警告用户
         echo "#!/bin/bash" > "$SCRIPT_PATH"
         echo "echo '⚠️ 错误：快捷指令失效。请使用 ./install.sh 方式运行脚本。'" >> "$SCRIPT_PATH"
     fi
     chmod +x "$SCRIPT_PATH"
     sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx 2>/dev/null
+    
+    # 强制刷新命令hash
+    hash -r 2>/dev/null
 }
 
 print_clash_meta() {
@@ -481,7 +477,7 @@ cmd_list() {
     uuid=$(cat "$CONF_DIR/uuid" | tr -d '\n\r ')
     
     echo ""
-    echo "================ [Argosbx 净化版 v3.1] ================"
+    echo "================ [Argosbx 净化版 v3.2] ================"
     echo "  UUID: $uuid"
     echo "  IP:   $server_ip"
     [ -n "$WARP_MODE" ] && echo "  WARP: ✅ 开启"
@@ -549,7 +545,7 @@ case "$1" in
         cmd_list
         ;;
     *)
-        echo ">>> 开始安装 Argosbx 净化版 v3.1..."
+        echo ">>> 开始安装 Argosbx 净化版 v3.2..."
         configure_argo_if_needed
         configure_warp_if_needed
         download_core
