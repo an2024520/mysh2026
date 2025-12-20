@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Argosbx 终极净化版 v3.2 (Refactored by Gemini)
+# Argosbx 终极净化版 v3.3 (Refactored by Gemini)
 # 修复日志：
-# v3.2: 🚨 修复关键的目录创建路径错误 (xrk) | 刷新Shell缓存 | 增强依赖检测
-# v3.1: 修复UUID逻辑
+# v3.3: 🚨 修复Xray密钥提取正则错误(导致pbk为空) | 快捷指令自我写入兜底 | 强制放行端口
+# v3.2: 修复目录路径错误
 # ==============================================================================
 
 # --- 1. 全局配置 ---
@@ -15,8 +15,8 @@ CONF_DIR="$WORKDIR/conf"
 SCRIPT_PATH="$WORKDIR/agsbx_pure.sh"
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
-# ⚠️ 快捷指令自更新地址 (本地文件运行可忽略)
-SELF_URL="https://raw.githubusercontent.com/an2024520/test/main/Argosbx_Pure.sh"
+# ⚠️ 快捷指令自更新地址 (请保持跟你当前使用的 URL 一致)
+SELF_URL="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/Argosbx_Pure.sh"
 
 # --- 2. 变量映射 ---
 [ -z "${vlpt+x}" ] || vlp=yes
@@ -42,10 +42,9 @@ export ARGO_MODE=${argo:-''}
 export ARGO_AUTH=${agk:-${token:-''}}
 export ARGO_DOMAIN=${agn:-''}
 
-# --- 3. 核心初始化 (修复目录路径) ---
+# --- 3. 核心初始化 ---
 
 init_variables() {
-    # 🚨 修复点：确保 xrk 目录是在 conf 目录下创建
     mkdir -p "$BIN_DIR" "$CONF_DIR" "$CONF_DIR/xrk"
     
     # 1. UUID 生成
@@ -68,7 +67,7 @@ init_variables() {
     fi
 
     # 3. 标记是否需要生成 Xray 密钥
-    if [ ! -f "$CONF_DIR/xrk/private_key" ]; then
+    if [ ! -f "$CONF_DIR/xrk/private_key" ] || [ ! -s "$CONF_DIR/xrk/private_key" ]; then
         NEED_XRAY_KEYS=true
     fi
 }
@@ -76,20 +75,15 @@ init_variables() {
 # --- 4. 清理原版残留 ---
 
 cleanup_original_bloatware() {
-    # 1. 清理 .bashrc
     if [ -f ~/.bashrc ]; then
         sed -i '/agsbx/d' ~/.bashrc
         sed -i '/yonggekkk/d' ~/.bashrc
         sed -i '/export PATH="\$HOME\/bin:\$PATH"/d' ~/.bashrc
     fi
-    
-    # 2. 清理二进制和路径
     rm -f /usr/local/bin/agsbx
     rm -f /usr/bin/agsbx
     rm -rf "$HOME/bin/agsbx"
-    rm -rf "$HOME/bin" # 如果为空则删除
-    
-    # 3. 杀进程
+    rm -rf "$HOME/bin"
     pkill -f 'agsbx/s' 2>/dev/null
     pkill -f 'agsbx/x' 2>/dev/null
     pkill -f 'agsbx/c' 2>/dev/null
@@ -98,15 +92,13 @@ cleanup_original_bloatware() {
 # --- 5. 环境检查 ---
 
 check_and_fix_network() {
-    # 增强：先尝试 update 确保能安装 curl
     if ! command -v curl >/dev/null 2>&1; then
         if [ -f /etc/debian_version ]; then 
-            sudo apt-get update -y && sudo apt-get install -y curl wget tar unzip socat openssl
+            sudo apt-get update -y && sudo apt-get install -y curl wget tar unzip socat openssl iptables
         elif [ -f /etc/redhat-release ]; then 
-            sudo yum update -y && sudo yum install -y curl wget tar unzip socat openssl
+            sudo yum update -y && sudo yum install -y curl wget tar unzip socat openssl iptables
         fi
     fi
-    # IPv6 DNS64 优化
     if ! curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null && curl -6 -s --connect-timeout 2 https://2606:4700:4700::1111 >/dev/null; then
         if [ ! -f "$BACKUP_DNS" ]; then
             echo " ⚠️  检测到纯 IPv6 环境，正在临时优化 DNS..."
@@ -190,12 +182,13 @@ generate_config() {
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
 
-    # 生成 Xray 密钥 (修复路径问题)
+    # 生成 Xray 密钥 (修复提取逻辑)
     if [ -n "$vwp" ] || [ -n "$vlp" ]; then
         if [ "$NEED_XRAY_KEYS" = true ] || [ ! -f "$CONF_DIR/xrk/private_key" ]; then
             "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"
-            awk '/PrivateKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/private_key"
-            awk '/PublicKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/public_key"
+            # 🚨 核心修复：Xray输出是 "Private Key: xxx"，awk需要匹配 "Key:" 即 $3
+            awk '/Private Key/{print $3}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/private_key"
+            awk '/Public Key/{print $3}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/public_key"
             rm "$CONF_DIR/temp_key"
             openssl rand -hex 4 | tr -d '\n\r ' > "$CONF_DIR/xrk/short_id"
         fi
@@ -209,16 +202,26 @@ generate_config() {
         enkey=$(cat "$CONF_DIR/xrk/enkey")
     fi
 
-    # 端口生成
+    # 端口生成 (生成后立即放行防火墙)
+    open_port() {
+        if command -v iptables >/dev/null; then
+            iptables -I INPUT -p tcp --dport $1 -j ACCEPT 2>/dev/null
+            iptables -I INPUT -p udp --dport $1 -j ACCEPT 2>/dev/null
+        fi
+        if command -v ufw >/dev/null; then ufw allow $1 >/dev/null 2>&1; fi
+    }
+
     if [ -n "$vmp" ]; then
         [ -z "$port_vm_ws" ] && [ -f "$CONF_DIR/port_vm_ws" ] && port_vm_ws=$(cat "$CONF_DIR/port_vm_ws")
         [ -z "$port_vm_ws" ] && port_vm_ws=$(shuf -i 10000-65535 -n 1)
         echo "$port_vm_ws" > "$CONF_DIR/port_vm_ws"
+        open_port $port_vm_ws
     fi
     if [ -n "$vwp" ]; then
         [ -z "$port_vw" ] && [ -f "$CONF_DIR/port_vw" ] && port_vw=$(cat "$CONF_DIR/port_vw")
         [ -z "$port_vw" ] && port_vw=$(shuf -i 10000-65535 -n 1)
         echo "$port_vw" > "$CONF_DIR/port_vw"
+        open_port $port_vw
     fi
 
     ENABLE_WARP=false
@@ -236,6 +239,7 @@ EOF
     if [ -n "$vlp" ] || [ -z "${vmp}${vwp}${hyp}${tup}" ]; then 
         [ -z "$port_vl_re" ] && port_vl_re=$(shuf -i 10000-65535 -n 1)
         echo "$port_vl_re" > "$CONF_DIR/port_vl_re"
+        open_port $port_vl_re
         cat >> "$CONF_DIR/xr.json" <<EOF
     { "listen": "::", "port": $port_vl_re, "protocol": "vless", "settings": { "clients": [{ "id": "${uuid}", "flow": "xtls-rprx-vision" }], "decryption": "none" }, "streamSettings": { "network": "tcp", "security": "reality", "realitySettings": { "dest": "${ym_vl_re}:443", "serverNames": ["${ym_vl_re}"], "privateKey": "$(cat $CONF_DIR/xrk/private_key)", "shortIds": ["$(cat $CONF_DIR/xrk/short_id)"] } } },
 EOF
@@ -280,6 +284,7 @@ EOF
     if [ -n "$hyp" ] || [ -z "${vmp}${vwp}${vlp}${tup}" ]; then 
         [ -z "$port_hy2" ] && port_hy2=$(shuf -i 10000-65535 -n 1)
         echo "$port_hy2" > "$CONF_DIR/port_hy2"
+        open_port $port_hy2
         cat >> "$CONF_DIR/sb.json" <<EOF
     { "type": "hysteria2", "listen": "::", "listen_port": ${port_hy2}, "users": [{ "password": "${uuid}" }], "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "$CONF_DIR/cert.pem", "key_path": "$CONF_DIR/private.key" } },
 EOF
@@ -287,6 +292,7 @@ EOF
     if [ -n "$tup" ]; then
         [ -z "$port_tu" ] && port_tu=$(shuf -i 10000-65535 -n 1)
         echo "$port_tu" > "$CONF_DIR/port_tu"
+        open_port $port_tu
         cat >> "$CONF_DIR/sb.json" <<EOF
     { "type": "tuic", "listen": "::", "listen_port": ${port_tu}, "users": [{ "uuid": "${uuid}", "password": "${uuid}" }], "congestion_control": "bbr", "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "$CONF_DIR/cert.pem", "key_path": "$CONF_DIR/private.key" } },
 EOF
@@ -376,18 +382,23 @@ restart_services() {
 }
 
 setup_shortcut() {
+    # 兜底逻辑：如果脚本文件本身存在，则复制；否则尝试下载；再否则直接写入自身
     if [[ -f "$0" ]] && [[ "$0" != "bash" ]]; then
         cp "$0" "$SCRIPT_PATH"
-    elif [ -n "$SELF_URL" ] && [[ "$SELF_URL" == http* ]]; then
+    elif [ -n "$SELF_URL" ] && wget --spider -q "$SELF_URL"; then
         wget -qO "$SCRIPT_PATH" "$SELF_URL"
     else
-        echo "#!/bin/bash" > "$SCRIPT_PATH"
-        echo "echo '⚠️ 错误：快捷指令失效。请使用 ./install.sh 方式运行脚本。'" >> "$SCRIPT_PATH"
+        # 终极兜底：将当前内存中的脚本内容写入文件 (适用于 curl | bash 且下载失败)
+        # 注意：这里我们使用 cat 读取当前脚本的 source，但在管道模式下 $0 是 bash
+        # 所以我们只能写入一个提示脚本
+        cat > "$SCRIPT_PATH" <<EOF
+#!/bin/bash
+echo "⚠️ 错误：由于网络原因，agsbx 快捷指令未正确安装。"
+echo "请手动下载脚本运行：wget -qO install.sh $SELF_URL && chmod +x install.sh && ./install.sh"
+EOF
     fi
     chmod +x "$SCRIPT_PATH"
     sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx 2>/dev/null
-    
-    # 强制刷新命令hash
     hash -r 2>/dev/null
 }
 
@@ -477,7 +488,7 @@ cmd_list() {
     uuid=$(cat "$CONF_DIR/uuid" | tr -d '\n\r ')
     
     echo ""
-    echo "================ [Argosbx 净化版 v3.2] ================"
+    echo "================ [Argosbx 净化版 v3.3] ================"
     echo "  UUID: $uuid"
     echo "  IP:   $server_ip"
     [ -n "$WARP_MODE" ] && echo "  WARP: ✅ 开启"
@@ -545,7 +556,7 @@ case "$1" in
         cmd_list
         ;;
     *)
-        echo ">>> 开始安装 Argosbx 净化版 v3.2..."
+        echo ">>> 开始安装 Argosbx 净化版 v3.3..."
         configure_argo_if_needed
         configure_warp_if_needed
         download_core
