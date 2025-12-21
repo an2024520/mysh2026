@@ -1,92 +1,137 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增工具 (AnyTLS + Reality)
-#  - 协议: AnyTLS (Sing-box 专属传输协议)
-#  - 安全: Reality (无需域名 / 偷取 SNI 证书)
-#  - 特性: 极度拟态，模拟任意 TLS 指纹
+#  Sing-box 节点新增: AnyTLS + Reality + 智能端口检测
+#  - 协议: AnyTLS (Sing-box 专属拟态协议)
+#  - 架构: 严格复刻 Xray 脚本交互体验
+#  - 兼容: 支持 v2rayN (v7.14+) 分享链接
 # ============================================================
 
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
-SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
-CONF_FILE="/usr/local/etc/sing-box/config.json"
+# 核心路径
+CONFIG_FILE="/usr/local/etc/sing-box/config.json"
+SB_BIN="/usr/local/bin/sing-box"
 
-# 1. 检查 Sing-box 是否安装
-if [[ ! -f "/usr/local/bin/sing-box" ]]; then
-    echo -e "${RED}错误: 未检测到 Sing-box 核心，请先安装核心环境！${PLAIN}"
+echo -e "${GREEN}>>> [Sing-box] 智能添加节点: AnyTLS + Reality ...${PLAIN}"
+
+# 1. 环境检查
+if [[ ! -f "$SB_BIN" ]]; then
+    echo -e "${RED}错误: 未找到 Sing-box 核心！请先运行 [核心环境管理] 安装。${PLAIN}"
     exit 1
 fi
-if ! command -v jq &> /dev/null; then
-    apt update -y && apt install -y jq
+
+if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
+    echo -e "${YELLOW}检测到缺少必要工具，正在安装 (jq, openssl)...${PLAIN}"
+    apt update -y && apt install -y jq openssl
 fi
 
-echo -e "${GREEN}>>> 正在配置 Sing-box AnyTLS + Reality 节点...${PLAIN}"
+# 2. 初始化配置文件骨架
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo -e "${YELLOW}配置文件不存在，正在初始化标准骨架...${PLAIN}"
+    mkdir -p /usr/local/etc/sing-box
+    cat <<EOF > $CONFIG_FILE
+{
+  "log": {
+    "level": "info",
+    "output": "/var/log/sing-box/access.log",
+    "timestamp": true
+  },
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    }
+  ],
+  "route": {
+    "rules": []
+  }
+}
+EOF
+    echo -e "${GREEN}标准骨架初始化完成。${PLAIN}"
+fi
 
-# 2. 获取用户输入
-# ------------------------------------------------
-# 端口
+# 3. 用户配置参数
+echo -e "${YELLOW}--- 配置 AnyTLS (Reality) 节点参数 ---${PLAIN}"
+
+# A. 端口设置
 while true; do
-    read -p "请输入节点端口 (默认 8443): " PORT
-    [[ -z "$PORT" ]] && PORT="8443"
-    if [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; then
-        # 简单检查端口占用 (仅供参考)
-        if ss -tuln | grep -q ":$PORT "; then
-            echo -e "${RED}警告: 端口 $PORT 似乎已被占用，请更换。${PLAIN}"
+    read -p "请输入监听端口 (推荐 8443, 2096, 默认 8443): " CUSTOM_PORT
+    [[ -z "$CUSTOM_PORT" ]] && PORT=8443 && break
+    
+    if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
+        if grep -q "\"listen_port\": $CUSTOM_PORT" "$CONFIG_FILE"; then
+             echo -e "${RED}警告: 端口 $CUSTOM_PORT 似乎已被之前的节点占用了，请换一个！${PLAIN}"
         else
-            break
+             PORT="$CUSTOM_PORT"
+             break
         fi
     else
-        echo -e "${RED}无效端口，请输入 1-65535 之间的数字。${PLAIN}"
+        echo -e "${RED}无效端口。${PLAIN}"
     fi
 done
 
-# 目标网站 (Dest/SNI)
-read -p "请输入 Reality 偷取的目标域名 (默认 www.apple.com): " DEST_DOMAIN
-[[ -z "$DEST_DOMAIN" ]] && DEST_DOMAIN="www.apple.com"
+# B. 伪装域名选择
+echo -e "${YELLOW}请选择伪装域名 (SNI) - 日本 VPS 推荐:${PLAIN}"
+echo -e "  1. www.sony.jp (索尼日本 - 逻辑完美)"
+echo -e "  2. www.nintendo.co.jp (任天堂 - 模拟待机流量)"
+echo -e "  3. updates.cdn-apple.com (苹果CDN - 跨国更新流量)"
+echo -e "  4. www.microsoft.com (微软 - 兼容性保底)"
+echo -e "  5. ${GREEN}手动输入 (自定义域名)${PLAIN}"
+read -p "请选择 [1-5] (默认 1): " SNI_CHOICE
 
-# 密码 (AnyTLS 使用 password 而不是 UUID)
-read -p "请输入连接密码 (留空随机生成): " USER_PASS
-if [[ -z "$USER_PASS" ]]; then
-    USER_PASS=$(openssl rand -base64 16)
+case $SNI_CHOICE in
+    2) SNI="www.nintendo.co.jp" ;;
+    3) SNI="updates.cdn-apple.com" ;;
+    4) SNI="www.microsoft.com" ;;
+    5) 
+        read -p "请输入域名 (不带https://): " MANUAL_SNI
+        [[ -z "$MANUAL_SNI" ]] && SNI="www.sony.jp" || SNI="$MANUAL_SNI"
+        ;;
+    *) SNI="www.sony.jp" ;;
+esac
+
+# C. 连通性校验
+echo -e "${YELLOW}正在检查连通性: $SNI ...${PLAIN}"
+if ! curl -s -I --max-time 5 "https://$SNI" >/dev/null; then
+    echo -e "${RED}警告: 无法连接到 $SNI。建议更换。${PLAIN}"
+    read -p "是否强制继续? (y/n): " FORCE
+    [[ "$FORCE" != "y" ]] && exit 1
 fi
 
-# 别名
-read -p "请为节点起个别名 (默认 sb-anytls): " NODE_TAG
-[[ -z "$NODE_TAG" ]] && NODE_TAG="sb-anytls"
+# 4. 生成密钥
+echo -e "${YELLOW}正在生成密钥...${PLAIN}"
 
-# 3. 生成 Reality 密钥对
-# ------------------------------------------------
-echo -e "${YELLOW}正在生成 Reality 密钥...${PLAIN}"
-KEY_PAIR=$(/usr/local/bin/sing-box generate reality-keypair)
+USER_PASS=$(openssl rand -base64 16)
+KEY_PAIR=$($SB_BIN generate reality-keypair)
 PRIVATE_KEY=$(echo "$KEY_PAIR" | grep "PrivateKey" | awk '{print $2}')
 PUBLIC_KEY=$(echo "$KEY_PAIR" | grep "PublicKey" | awk '{print $2}')
-SHORT_ID=$(/usr/local/bin/sing-box generate rand --hex 8)
+SHORT_ID=$($SB_BIN generate rand --hex 8)
 
 if [[ -z "$PRIVATE_KEY" ]]; then
-    echo -e "${RED}错误: Reality 密钥生成失败！${PLAIN}"
+    echo -e "${RED}错误: 密钥生成失败！${PLAIN}"
     exit 1
 fi
 
-echo -e "Private Key: ${SKYBLUE}$PRIVATE_KEY${PLAIN}"
-echo -e "Public Key:  ${SKYBLUE}$PUBLIC_KEY${PLAIN}"
-echo -e "Short ID:    ${SKYBLUE}$SHORT_ID${PLAIN}"
+# 5. 构建节点 JSON
+echo -e "${YELLOW}正在将节点注入配置文件...${PLAIN}"
 
-# 4. 写入配置文件 (JSON 操作)
-# ------------------------------------------------
-echo -e "${YELLOW}正在写入配置文件...${PLAIN}"
+NODE_TAG="anytls-${PORT}"
 
-# 构造 AnyTLS 入站配置
-# 注意：AnyTLS 是一个独立的 type，不是 VLESS 的 transport
-NEW_INBOUND=$(jq -n \
-    --arg tag "$NODE_TAG" \
+NODE_JSON=$(jq -n \
     --arg port "$PORT" \
+    --arg tag "$NODE_TAG" \
     --arg pass "$USER_PASS" \
-    --arg dest "$DEST_DOMAIN" \
+    --arg dest "$SNI" \
     --arg pk "$PRIVATE_KEY" \
     --arg sid "$SHORT_ID" \
     '{
@@ -115,57 +160,57 @@ NEW_INBOUND=$(jq -n \
         }
     }')
 
-# 将新入站插入配置
-# 如果 config.json 不存在或不合法，先创建一个空的骨架
-if [[ ! -f "$CONF_FILE" ]] || [[ $(cat "$CONF_FILE") == "" ]]; then
-    echo '{"inbounds":[],"outbounds":[],"route":{"rules":[]}}' > "$CONF_FILE"
-fi
+tmp=$(mktemp)
+jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-# 使用 jq 将新 inbound 加入 inbound 列表
-TEMP_JSON=$(mktemp)
-jq --argjson new "$NEW_INBOUND" '.inbounds += [$new]' "$CONF_FILE" > "$TEMP_JSON" && mv "$TEMP_JSON" "$CONF_FILE"
-
-# 5. 重启服务
-# ------------------------------------------------
-echo -e "${YELLOW}正在重启 Sing-box 服务...${PLAIN}"
+# 6. 重启与输出
 systemctl restart sing-box
+sleep 2
 
 if systemctl is-active --quiet sing-box; then
-    echo -e "${GREEN}节点添加成功！${PLAIN}"
+    PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
+    NODE_NAME="SB-AnyTLS-${PORT}"
     
-    # 获取本机 IP
-    IPV4=$(curl -s4m5 https://api.ip.sb/ip || echo "你的IP")
-    
-    # 6. 输出客户端配置 (AnyTLS 没有标准链接格式，推荐复制 JSON)
-    echo -e "===================================================="
-    echo -e "       ${SKYBLUE}Sing-box AnyTLS + Reality 节点配置${PLAIN}"
-    echo -e "===================================================="
-    echo -e "${YELLOW}注意：AnyTLS 是 Sing-box 专属协议，请直接复制下方 JSON 到客户端 (如 GUI 客户端或手动配置)${PLAIN}"
+    # === 构建 v2rayN 支持的 anytls:// 链接 ===
+    # 格式: anytls://password@ip:port?security=reality&sni=xxx&fp=chrome&pbk=xxx&sid=xxx#Name
+    SHARE_LINK="anytls://${USER_PASS}@${PUBLIC_IP}:${PORT}?security=reality&sni=${SNI}&fingerprint=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
+
     echo -e ""
-    echo -e "${GREEN}{"
-    echo -e "  \"type\": \"anytls\","
-    echo -e "  \"tag\": \"$NODE_TAG-out\","
-    echo -e "  \"server\": \"$IPV4\","
-    echo -e "  \"server_port\": $PORT,"
-    echo -e "  \"password\": \"$USER_PASS\","
-    echo -e "  \"tls\": {"
-    echo -e "    \"enabled\": true,"
-    echo -e "    \"server_name\": \"$DEST_DOMAIN\","
-    echo -e "    \"utls\": {"
-    echo -e "      \"enabled\": true,"
-    echo -e "      \"fingerprint\": \"chrome\""
-    echo -e "    },"
-    echo -e "    \"reality\": {"
-    echo -e "      \"enabled\": true,"
-    echo -e "      \"public_key\": \"$PUBLIC_KEY\","
-    echo -e "      \"short_id\": \"$SHORT_ID\""
-    echo -e "    }"
-    echo -e "  }"
-    echo -e "}${PLAIN}"
-    echo -e ""
-    echo -e "===================================================="
-    echo -e "提示: 客户端需要 Sing-box v1.12.0 或更高版本"
+    echo -e "${GREEN}========================================${PLAIN}"
+    echo -e "${GREEN}    [Sing-box] 节点已追加成功！        ${PLAIN}"
+    echo -e "${GREEN}========================================${PLAIN}"
+    echo -e "端口        : ${YELLOW}${PORT}${PLAIN}"
+    echo -e "SNI (伪装)  : ${YELLOW}${SNI}${PLAIN}"
+    echo -e "协议        : AnyTLS + Reality"
+    echo -e "----------------------------------------"
+    echo -e "🚀 [v2rayN 分享链接] (v7.14+ 版本支持):"
+    echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
+    echo -e "----------------------------------------"
+    echo -e "📱 [Sing-box 客户端配置块] (通用):"
+    echo -e "${YELLOW}"
+    cat <<EOF
+{
+  "type": "anytls",
+  "tag": "proxy-out",
+  "server": "${PUBLIC_IP}",
+  "server_port": ${PORT},
+  "password": "${USER_PASS}",
+  "tls": {
+    "enabled": true,
+    "server_name": "${SNI}",
+    "utls": {
+      "enabled": true,
+      "fingerprint": "chrome"
+    },
+    "reality": {
+      "enabled": true,
+      "public_key": "${PUBLIC_KEY}",
+      "short_id": "${SHORT_ID}"
+    }
+  }
+}
+EOF
+    echo -e "${PLAIN}----------------------------------------"
 else
-    echo -e "${RED}服务启动失败！${PLAIN}"
-    echo -e "请检查日志: journalctl -u sing-box -e"
+    echo -e "${RED}启动失败！请检查日志: journalctl -u sing-box -e${PLAIN}"
 fi
