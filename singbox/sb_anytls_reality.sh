@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: AnyTLS + Reality + 智能防冲突
+#  Sing-box 节点新增: AnyTLS + Reality + 智能防冲突 (v2.1)
 #  - 协议: AnyTLS (Sing-box 专属拟态协议)
-#  - 修复: 自动覆盖旧的同名/同端口节点，防止启动报错
+#  - 修复: 自动清理同名节点 / 暴力修复日志权限
 #  - 兼容: 支持 v2rayN (v7.14+) 分享链接
 # ============================================================
 
@@ -16,6 +16,7 @@ PLAIN='\033[0m'
 # 核心路径
 CONFIG_FILE="/usr/local/etc/sing-box/config.json"
 SB_BIN="/usr/local/bin/sing-box"
+LOG_DIR="/var/log/sing-box"
 
 echo -e "${GREEN}>>> [Sing-box] 智能添加节点: AnyTLS + Reality ...${PLAIN}"
 
@@ -38,7 +39,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 {
   "log": {
     "level": "info",
-    "output": "/var/log/sing-box/access.log",
+    "output": "${LOG_DIR}/access.log",
     "timestamp": true
   },
   "inbounds": [],
@@ -127,7 +128,7 @@ echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
 
 NODE_TAG="anytls-${PORT}"
 
-# === 关键修复步骤：先删除旧的同名 tag ===
+# === 关键步骤：清理旧的同名 tag ===
 # 防止 duplicate inbound tag 错误
 tmp0=$(mktemp)
 jq --arg tag "$NODE_TAG" 'del(.inbounds[] | select(.tag == $tag))' "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
@@ -170,7 +171,17 @@ NODE_JSON=$(jq -n \
 tmp=$(mktemp)
 jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-# 6. 重启与输出
+# 6. 修复日志权限 (解决 Permission denied)
+# ----------------------------------------------------
+echo -e "${YELLOW}正在修复权限并重启服务...${PLAIN}"
+mkdir -p "$LOG_DIR"
+touch "${LOG_DIR}/access.log"
+touch "${LOG_DIR}/error.log"
+
+# 无论 Systemd 用什么用户运行，直接赋予 777 权限确保可写
+chmod -R 777 "$LOG_DIR"
+
+# 7. 重启与输出
 systemctl restart sing-box
 sleep 2
 
@@ -178,7 +189,6 @@ if systemctl is-active --quiet sing-box; then
     PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
     NODE_NAME="SB-AnyTLS-${PORT}"
     
-    # 构建 v2rayN 链接
     SHARE_LINK="anytls://${USER_PASS}@${PUBLIC_IP}:${PORT}?security=reality&sni=${SNI}&fingerprint=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
 
     echo -e ""
@@ -220,5 +230,4 @@ EOF
     echo -e "${PLAIN}----------------------------------------"
 else
     echo -e "${RED}启动失败！请检查日志: journalctl -u sing-box -e${PLAIN}"
-    echo -e "${YELLOW}可能原因：配置文件格式错误或端口仍被占用。${PLAIN}"
 fi
