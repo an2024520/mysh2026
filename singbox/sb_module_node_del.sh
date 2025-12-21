@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-# 脚本名称：sb_module_node_del.sh
-# 作用：深度清理 Sing-box 节点 (支持批量/全删/路由规则联动清理)
+# 脚本名称：sb_module_node_del.sh (v3.2)
+# 作用：深度清理 Sing-box 节点 (Config / Routing / Meta / Certs)
+# 更新：新增对 Hysteria 2 等协议外部证书文件的关联删除
 # ============================================================
 
 RED='\033[0;31m'
@@ -46,13 +47,11 @@ fi
 # 2. 智能节点扫描 (排除法)
 # ==========================================
 # 逻辑：不设白名单，而是排除系统核心类型，剩下的都视为“用户节点”
-# 排除列表：direct, block, dns, dns-out, selector (节点组), urltest (自动测速), loopback
 # ------------------------------------------
 
 echo -e "${GREEN}正在读取配置文件...${PLAIN}"
 
 # 提取 Inbounds (通常是服务端入口)
-# 排除: 无 (Inbounds通常都是用户配置的，除非有 tun/mixed，这里简单处理全部列出供选，或者你可以加 select 过滤)
 RAW_IN=$(jq -r '.inbounds[]? | .tag + " [Server-In]"' "$CONFIG_FILE")
 
 # 提取 Outbounds (通常是客户端节点)
@@ -83,7 +82,7 @@ clear
 echo -e "${BLUE}============= 删除 Sing-box 节点 =============${PLAIN}"
 echo -e " 检测到配置文件: ${YELLOW}$CONFIG_FILE${PLAIN}"
 echo -e " -------------------------------------------"
-echo -e " ${RED}注意：删除节点将同步删除关联的路由规则 (Route Rules)${PLAIN}"
+echo -e " ${RED}注意：删除节点将同步删除关联的路由规则及证书文件${PLAIN}"
 echo -e " -------------------------------------------"
 
 i=1
@@ -146,7 +145,7 @@ if [[ ${#DELETE_TAGS[@]} -eq 0 ]]; then
 fi
 
 echo -e ""
-echo -e "${YELLOW}即将删除以下节点及其关联配置 (路由/Meta):${PLAIN}"
+echo -e "${YELLOW}即将删除以下节点及其关联资源:${PLAIN}"
 for t in "${DELETE_TAGS[@]}"; do
     echo -e " - ${RED}$t${PLAIN}"
 done
@@ -155,25 +154,41 @@ read -p "确认执行删除? (y/n): " CONFIRM_FINAL
 if [[ "$CONFIRM_FINAL" != "y" ]]; then echo "操作取消"; exit 0; fi
 
 # ==========================================
-# 4. 执行深度清理 (Core Logic)
+# 4. 执行深度清理 (Config + Certs + Meta)
 # ==========================================
 
 # 备份
 cp "$CONFIG_FILE" "$BACKUP_FILE"
 echo -e "${GREEN}已创建备份: $BACKUP_FILE${PLAIN}"
 
-# 构建 jq 参数 (将 bash 数组传递给 jq)
-# 使用 --argjson 传递 tags 列表，安全高效
+# --- 新增: 证书清理逻辑 ---
+echo -e "${YELLOW}正在检查并清理关联证书文件...${PLAIN}"
+for TAG in "${DELETE_TAGS[@]}"; do
+    # 查找该 Tag 对应的 Inbound 中的 certificate_path 和 key_path
+    # 仅针对 Hysteria2 或其他使用了外部证书的协议
+    CERT_FILES=$(jq -r --arg tag "$TAG" '
+        .inbounds[]? | select(.tag == $tag) | 
+        (.tls.certificate_path // empty), (.tls.key_path // empty)
+    ' "$CONFIG_FILE")
+    
+    if [[ -n "$CERT_FILES" ]]; then
+        for f in $CERT_FILES; do
+            if [[ -f "$f" ]]; then
+                rm -f "$f"
+                echo -e "  > 已删除残留文件: ${SKYBLUE}$f${PLAIN}"
+            fi
+        done
+    fi
+done
+
+# --- JSON 清理逻辑 ---
+echo -e "${YELLOW}正在清理配置文件...${PLAIN}"
+
+# 构建 jq 参数
 JSON_TAGS=$(printf '%s\n' "${DELETE_TAGS[@]}" | jq -R . | jq -s .)
-
-echo -e "${YELLOW}正在处理配置文件 (Config & Routing)...${PLAIN}"
-
 TMP_FILE=$(mktemp)
 
-# jq 魔法：
-# 1. del(.inbounds): 删除匹配 tag 的入站
-# 2. del(.outbounds): 删除匹配 tag 的出站
-# 3. del(.route.rules): 删除 'outbound' 字段等于被删 tag 的路由规则 (清理残留!)
+# jq 魔法：Config + Routing Rules
 jq --argjson tags "$JSON_TAGS" '
     del(.inbounds[]? | select(.tag as $t | $tags | index($t))) | 
     del(.outbounds[]? | select(.tag as $t | $tags | index($t))) |
@@ -181,7 +196,6 @@ jq --argjson tags "$JSON_TAGS" '
 ' "$CONFIG_FILE" > "$TMP_FILE"
 
 if [ $? -eq 0 ]; then
-    # 检查文件是否为空 (jq 崩溃保护)
     if [[ -s "$TMP_FILE" ]]; then
         mv "$TMP_FILE" "$CONFIG_FILE"
         echo -e "${GREEN}主配置清理完成。${PLAIN}"
