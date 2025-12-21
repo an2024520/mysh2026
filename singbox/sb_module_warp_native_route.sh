@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (SB-Commander v5.0 Final)
-#  - 核心修复: 完美适配 Sing-box 1.12+ 严苛的配置格式
-#  - 解决方案: 弃用 Legacy 字段，回退 endpoint 命名，使用标准 Peers 结构
-#  - 兼容性: 修复 "legacy deprecated" 和 "unknown field endpoint"
+#  Sing-box Native WARP 管理模块 (SB-Commander v5.1)
+#  - 核心修复: 强力清除 "warp-out" 等旧节点，解决 Legacy 报错
+#  - 用户体验: IPv4 默认值 / IPv6 格式提示
+#  - 兼容性: 锁定 1.12.x 标准结构 (Peers -> server/port)
 # ============================================================
 
 RED='\033[0;31m'
@@ -88,7 +88,6 @@ base64_to_reserved_shell() {
     [[ -n "$bytes" ]] && echo "[$bytes]" || echo ""
 }
 
-# 注册逻辑
 register_warp() {
     ensure_python || return 1
     echo -e "${YELLOW}正在注册免费账号...${PLAIN}"
@@ -111,15 +110,21 @@ register_warp() {
     write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
 }
 
-# 手动录入
 manual_warp() {
     echo -e "${GREEN}手动录入 WARP 信息${PLAIN}"
     read -p "私钥 (Private Key): " priv_key
     if [[ -z "$priv_key" ]]; then echo -e "${RED}私钥不能为空${PLAIN}"; return; fi
-    read -p "公钥 (Peer Public Key, 留空默认): " peer_pub
+    
+    read -p "公钥 (Peer Public Key, 默认回车): " peer_pub
     [[ -z "$peer_pub" ]] && peer_pub="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
-    read -p "本机 IPv4 (如 172.16.0.2/32): " v4
-    read -p "本机 IPv6 (如 2606:4700:...): " v6
+    
+    # === 更新点 1: IPv4 默认值 ===
+    read -p "本机 IPv4 (默认 172.16.0.2/32): " v4
+    [[ -z "$v4" ]] && v4="172.16.0.2/32"
+    
+    # === 更新点 2: IPv6 提示 ===
+    echo -e "${YELLOW}提示: IPv6 地址必须以 /128 结尾${PLAIN}"
+    read -p "本机 IPv6 (如 2606:4700:.../128): " v6
     
     echo -e "Reserved (示例: [0, 0, 0] 或 c+kIBA==)"
     read -p "请输入: " res_input
@@ -141,7 +146,6 @@ manual_warp() {
     write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
 }
 
-# 写入配置 (关键修复：Standard WireGuard Format)
 write_warp_config() {
     local priv="$1"
     local pub="$2"
@@ -153,9 +157,7 @@ write_warp_config() {
     if [[ -n "$v4" && "$v4" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]'); fi
     if [[ -n "$v6" && "$v6" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]'); fi
     
-    # 构造标准的 WireGuard Outbound
-    # 1. 不在根节点使用 server/server_port (避免 legacy 报错)
-    # 2. 在 peers 内部使用 server/server_port (避免 unknown field endpoint 报错)
+    # === 格式锁定: 1.12.x 标准 (Server in Peers) ===
     local warp_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -182,9 +184,11 @@ write_warp_config() {
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
-    # 清理旧的 WARP
-    jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF"
-    # 写入新的 WARP
+    # === 更新点 3: 强力清理旧节点 ===
+    # 删除 tag 为 "WARP", "warp", "warp-out" (旧版脚本常见tag) 的节点
+    jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .tag == "warp-out"))' "$CONFIG_FILE" > "$TMP_CONF"
+    
+    # 写入新配置
     jq --argjson new "$warp_json" '.outbounds += [$new]' "$TMP_CONF" > "${TMP_CONF}.2"
     
     if [[ $? -eq 0 && -s "${TMP_CONF}.2" ]]; then
@@ -265,7 +269,8 @@ uninstall_warp() {
     echo -e "${YELLOW}正在卸载 WARP...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_uninstall"
     local TMP_CONF=$(mktemp)
-    jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    # 强力删除所有 WARP 相关 Tag
+    jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .tag == "warp-out"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     restart_sb
 }
@@ -279,7 +284,7 @@ show_menu() {
         local ver=$(sing-box version 2>/dev/null | head -n1 | awk '{print $3}')
         
         echo -e "================ Native WARP 配置向导 (Sing-box) ================"
-        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(适配 v5.0)${PLAIN}"
+        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(适配 1.12.x)${PLAIN}"
         echo -e " 配置文件: ${SKYBLUE}$CONFIG_FILE${PLAIN}"
         echo -e " 凭证状态: [$status_text]"
         echo -e "----------------------------------------------------"
