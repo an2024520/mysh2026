@@ -180,7 +180,7 @@ menu_nodes_sb() {
     while true; do
         clear
         echo -e "${BLUE}============= Sing-box 节点配置管理 =============${PLAIN}"
-        echo -e " ${SKYBLUE}1.${PLAIN} 新增: VLESS-H2-Reality (XHTTP 替代方案)"
+        echo -e " ${SKYBLUE}1.${PLAIN} 新增: AnyTLS-Reality (Sing-box 专属 / 极度拟态)"
         echo -e " ${SKYBLUE}2.${PLAIN} 新增: VLESS-Vision-Reality (极稳定 - 推荐)"
         echo -e " ${SKYBLUE}3.${PLAIN} 新增: VLESS-WS-TLS (CDN / Nginx前置)"
         echo -e " ${SKYBLUE}4.${PLAIN} 新增: VLESS-WS-Tunnel (Tunnel穿透专用)"
