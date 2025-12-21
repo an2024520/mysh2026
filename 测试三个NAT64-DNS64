@@ -1,0 +1,75 @@
+cat << 'EOF' > fix_nat64.sh
+#!/bin/bash
+
+# 定义公共 NAT64 服务列表 (服务商 | IPv6地址)
+# 1. August Internet (通常最稳)
+DNS_AUGUST="2a09:c500::1"
+# 2. Trex.fi (备用，芬兰)
+DNS_TREX="2001:67c:2b0::4"
+# 3. Kasper (丹麦，备用)
+DNS_KASPER="2a05:d014:527:104::104"
+
+echo "========================================="
+echo "   NAT64 自动轮询修复工具 (IPv6-Only)"
+echo "========================================="
+
+# 1. 先解锁文件，防止无法修改
+chattr -i /etc/resolv.conf >/dev/null 2>&1
+# 停止 systemd-resolved 防止干扰 (Debian/Ubuntu 常见问题)
+systemctl stop systemd-resolved >/dev/null 2>&1
+systemctl disable systemd-resolved >/dev/null 2>&1
+
+# 2. 定义测试函数
+test_dns() {
+    local dns_ip=$1
+    local provider_name=$2
+    
+    echo -n "正在尝试 [$provider_name] ($dns_ip) ... "
+    
+    # 暴力写入
+    rm -f /etc/resolv.conf
+    echo "nameserver $dns_ip" > /etc/resolv.conf
+    
+    # 测试连接 (超时时间设置短一点，3秒)
+    # 注意：这里我们测试 ipv4.google.com，确保 DNS64 生效
+    if curl -I -s --connect-timeout 3 https://ipv4.google.com >/dev/null 2>&1; then
+        echo "✅ 通了！"
+        return 0
+    else
+        echo "❌ 失败"
+        return 1
+    fi
+}
+
+# 3. 开始轮询
+SUCCESS=0
+if test_dns "$DNS_AUGUST" "August Internet"; then
+    SUCCESS=1
+elif test_dns "$DNS_TREX" "Trex.fi"; then
+    SUCCESS=1
+elif test_dns "$DNS_KASPER" "Kasper"; then
+    SUCCESS=1
+fi
+
+# 4. 结果处理
+if [ $SUCCESS -eq 1 ]; then
+    echo "-----------------------------------------"
+    echo "🎉 找到可用的 NAT64 服务！"
+    echo "正在锁定配置文件，防止丢失..."
+    chattr +i /etc/resolv.conf
+    echo "✅ /etc/resolv.conf 已锁定 (chattr +i)"
+    echo "现在你可以重新运行 menu.sh 脚本了。"
+else
+    echo "-----------------------------------------"
+    echo "😱 全部失败！"
+    echo "可能原因："
+    echo "1. 你的 VPS 防火墙屏蔽了 UDP 53 端口出站。"
+    echo "2. 你的 VPS 本身 IPv6 网络故障 (尝试 curl -6 google.com 看看通不通)。"
+    
+    # 恢复一个默认值方便排查
+    echo "nameserver 2a09:c500::1" > /etc/resolv.conf
+fi
+EOF
+
+chmod +x fix_nat64.sh
+./fix_nat64.sh
