@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: Hysteria 2 + ACME (自有证书版)
-#  - 核心: 引用外部证书路径 + 写入 Inbounds + 写入 .meta
-#  - 协议: Hysteria 2 (UDP 暴力协议)
-#  - 场景: 适合已有 acme.sh / certbot 证书或购买了证书的用户
+#  Sing-box 节点新增: Hysteria 2 + ACME (通用版 v3.1)
+#  - 模式 1: 手动指定证书路径 (适合已有证书)
+#  - 模式 2: 自动申请证书 (集成 acme.sh，需 80 端口)
+#  - 核心: 写入 Inbounds + 写入 .meta + 端口霸占清理
 # ============================================================
 
 # 颜色定义
@@ -12,8 +12,9 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 PLAIN='\033[0m'
+SKYBLUE='\033[0;36m'
 
-echo -e "${GREEN}>>> [Sing-box] 智能添加节点: Hysteria 2 (自有证书版) ...${PLAIN}"
+echo -e "${GREEN}>>> [Sing-box] 智能添加节点: Hysteria 2 (ACME/证书版) ...${PLAIN}"
 
 # 1. 智能路径查找
 # ------------------------------------------------
@@ -32,6 +33,7 @@ if [[ -z "$CONFIG_FILE" ]]; then
 fi
 
 CONFIG_DIR=$(dirname "$CONFIG_FILE")
+CERT_SAVE_DIR="${CONFIG_DIR}/cert" # 证书统一存放目录
 META_FILE="${CONFIG_FILE}.meta"
 SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
 
@@ -46,10 +48,14 @@ fi
 if ! command -v jq &> /dev/null; then
     echo -e "${YELLOW}检测到缺少必要工具，正在安装 jq...${PLAIN}"
     if [ -f /etc/debian_version ]; then
-        apt update -y && apt install -y jq
+        apt update -y && apt install -y jq socat
     elif [ -f /etc/redhat-release ]; then
-        yum install -y jq
+        yum install -y jq socat
     fi
+fi
+# 确保安装 socat (acme.sh 依赖)
+if ! command -v socat &> /dev/null; then
+    apt install -y socat 2>/dev/null || yum install -y socat 2>/dev/null
 fi
 
 # 3. 初始化配置
@@ -64,23 +70,100 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 }
 EOF
 fi
+mkdir -p "$CERT_SAVE_DIR"
 
-# 4. 用户配置参数
-echo -e "${YELLOW}--- 配置 Hysteria 2 (ACME/证书) 参数 ---${PLAIN}"
+# 4. 证书模式选择
+# ------------------------------------------------
+echo -e "${YELLOW}--- 请选择证书获取方式 ---${PLAIN}"
+echo -e "  1. ${SKYBLUE}手动输入路径${PLAIN} (适合已有证书文件)"
+echo -e "  2. ${GREEN}自动申请证书${PLAIN} (使用 acme.sh，需占用 80 端口)"
+echo -e ""
+read -p "请选择 [1-2] (默认 1): " CERT_MODE
 
-# A. 域名与证书路径
-read -p "请输入绑定域名 (如 hy2.example.com): " DOMAIN
-if [[ -z "$DOMAIN" ]]; then echo -e "${RED}域名不能为空。${PLAIN}"; exit 1; fi
+CERT_PATH=""
+KEY_PATH=""
+DOMAIN=""
 
-echo -e "${YELLOW}请输入证书文件绝对路径 (.crt / .cer / .pem):${PLAIN}"
-read -p "路径: " CERT_PATH
-if [[ ! -f "$CERT_PATH" ]]; then echo -e "${RED}错误: 找不到文件 $CERT_PATH${PLAIN}"; exit 1; fi
+if [[ "$CERT_MODE" == "2" ]]; then
+    # === 模式 2: 自动申请逻辑 (参考 hy2.sh) ===
+    echo -e "${YELLOW}>>> 进入 ACME 自动申请模式...${PLAIN}"
+    
+    # 输入域名
+    read -p "请输入解析到本机 IP 的域名: " DOMAIN
+    [[ -z "$DOMAIN" ]] && echo -e "${RED}域名不能为空。${PLAIN}" && exit 1
+    
+    # 邮箱 (可选)
+    read -p "请输入注册邮箱 (回车跳过): " EMAIL
+    [[ -z "$EMAIL" ]] && EMAIL="install@${DOMAIN}"
 
-echo -e "${YELLOW}请输入密钥文件绝对路径 (.key):${PLAIN}"
-read -p "路径: " KEY_PATH
-if [[ ! -f "$KEY_PATH" ]]; then echo -e "${RED}错误: 找不到文件 $KEY_PATH${PLAIN}"; exit 1; fi
+    # 安装 acme.sh
+    if ! command -v ~/.acme.sh/acme.sh &> /dev/null; then
+        echo -e "${YELLOW}正在安装 acme.sh ...${PLAIN}"
+        curl https://get.acme.sh | sh -s email=$EMAIL
+    fi
+    ACME_BIN=~/.acme.sh/acme.sh
 
-# B. 端口设置
+    # 端口释放检测 (参考 hy2.sh 逻辑)
+    if lsof -i :80 | grep -q "LISTEN"; then
+        echo -e "${RED}警告: 检测到 80 端口被占用 (可能是 Nginx/Apache)。${PLAIN}"
+        echo -e "${YELLOW}为了申请证书，脚本将尝试临时停止 Web 服务。${PLAIN}"
+        read -p "是否继续? (y/n): " STOP_WEB
+        if [[ "$STOP_WEB" == "y" ]]; then
+            systemctl stop nginx 2>/dev/null
+            systemctl stop apache2 2>/dev/null
+            systemctl stop httpd 2>/dev/null
+        else
+            echo -e "${RED}取消操作。请手动释放 80 端口。${PLAIN}"
+            exit 1
+        fi
+    fi
+
+    # 申请证书 (Standalone 模式)
+    echo -e "${YELLOW}正在申请证书 (${DOMAIN}) ...${PLAIN}"
+    $ACME_BIN --issue -d "$DOMAIN" --standalone --force
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}证书申请失败！请检查域名解析或防火墙 80 端口。${PLAIN}"
+        exit 1
+    fi
+
+    # 安装证书到 Sing-box 目录
+    echo -e "${YELLOW}正在安装证书到: $CERT_SAVE_DIR ...${PLAIN}"
+    $ACME_BIN --install-cert -d "$DOMAIN" \
+        --key-file       "$CERT_SAVE_DIR/${DOMAIN}.key"  \
+        --fullchain-file "$CERT_SAVE_DIR/${DOMAIN}.cer" \
+        --reloadcmd     "systemctl restart sing-box"
+
+    CERT_PATH="$CERT_SAVE_DIR/${DOMAIN}.cer"
+    KEY_PATH="$CERT_SAVE_DIR/${DOMAIN}.key"
+    
+    if [[ ! -f "$CERT_PATH" ]]; then
+        echo -e "${RED}证书文件安装失败。${PLAIN}"
+        exit 1
+    fi
+    echo -e "${GREEN}证书申请并配置成功！${PLAIN}"
+
+else
+    # === 模式 1: 手动输入逻辑 ===
+    echo -e "${YELLOW}>>> 进入手动路径模式...${PLAIN}"
+    
+    read -p "请输入绑定域名 (用于分享链接): " DOMAIN
+    if [[ -z "$DOMAIN" ]]; then echo -e "${RED}域名不能为空。${PLAIN}"; exit 1; fi
+
+    echo -e "${YELLOW}请输入证书文件绝对路径 (.crt / .cer / .pem):${PLAIN}"
+    read -p "路径: " CERT_PATH
+    if [[ ! -f "$CERT_PATH" ]]; then echo -e "${RED}错误: 找不到文件 $CERT_PATH${PLAIN}"; exit 1; fi
+
+    echo -e "${YELLOW}请输入密钥文件绝对路径 (.key):${PLAIN}"
+    read -p "路径: " KEY_PATH
+    if [[ ! -f "$KEY_PATH" ]]; then echo -e "${RED}错误: 找不到文件 $KEY_PATH${PLAIN}"; exit 1; fi
+fi
+
+# 5. 节点参数配置
+# ------------------------------------------------
+echo -e "${YELLOW}--- 配置 Hysteria 2 节点参数 ---${PLAIN}"
+
+# A. 端口设置
 while true; do
     read -p "请输入 UDP 监听端口 (推荐 443, 8443, 默认 443): " CUSTOM_PORT
     [[ -z "$CUSTOM_PORT" ]] && PORT=443 && break
@@ -96,12 +179,12 @@ while true; do
     fi
 done
 
-# C. 密码与混淆
+# B. 密码与混淆
 PASSWORD=$(openssl rand -base64 16)
 OBFS_PASS=$(openssl rand -hex 8)
 echo -e "${YELLOW}已自动生成高强度密码与混淆密钥。${PLAIN}"
 
-# 5. 构建与注入节点
+# 6. 构建与注入节点
 echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
 
 NODE_TAG="Hy2-${DOMAIN}-${PORT}"
@@ -147,24 +230,24 @@ NODE_JSON=$(jq -n \
 tmp=$(mktemp)
 jq --argjson new_node "$NODE_JSON" 'if .inbounds == null then .inbounds = [] else . end | .inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-# === 步骤 4: 写入 Meta ===
+# === 步骤 4: 写入 Meta (记录域名和类型) ===
 if [[ ! -f "$META_FILE" ]]; then echo "{}" > "$META_FILE"; fi
 tmp_meta=$(mktemp)
+# 记录 type 为 hy2-acme，方便后续读取
 jq --arg tag "$NODE_TAG" --arg pass "$PASSWORD" --arg obfs "$OBFS_PASS" --arg domain "$DOMAIN" \
    '. + {($tag): {"type": "hy2-acme", "pass": $pass, "obfs": $obfs, "domain": $domain}}' "$META_FILE" > "$tmp_meta" && mv "$tmp_meta" "$META_FILE"
 
-# 6. 重启与输出
+# 7. 重启与输出
 echo -e "${YELLOW}正在重启服务...${PLAIN}"
 systemctl restart sing-box
 sleep 2
 
 if systemctl is-active --quiet sing-box; then
     PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
-    # 分享链接优先使用域名
     SHARE_HOST="$DOMAIN"
     NODE_NAME="$NODE_TAG"
     
-    # 构造 v2rayN 链接
+    # 构造链接
     SHARE_LINK="hysteria2://${PASSWORD}@${SHARE_HOST}:${PORT}?insecure=0&obfs=salamander&obfs-password=${OBFS_PASS}&sni=${DOMAIN}#${NODE_NAME}"
 
     echo -e ""
@@ -176,6 +259,7 @@ if systemctl is-active --quiet sing-box; then
     echo -e "认证密码    : ${YELLOW}${PASSWORD}${PLAIN}"
     echo -e "混淆密码    : ${YELLOW}${OBFS_PASS}${PLAIN}"
     echo -e "绑定域名    : ${YELLOW}${DOMAIN}${PLAIN}"
+    echo -e "证书状态    : $( [[ "$CERT_MODE" == "2" ]] && echo "${GREEN}自动续期 (acme.sh)${PLAIN}" || echo "${SKYBLUE}手动管理${PLAIN}" )"
     echo -e "----------------------------------------"
     echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
