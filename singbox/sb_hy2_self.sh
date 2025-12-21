@@ -5,6 +5,7 @@
 #  - 核心: 自动生成 SSL 证书 + 写入 Inbounds + 写入 .meta
 #  - 协议: Hysteria 2 (UDP 暴力协议)
 #  - 特性: 支持 Obfs 混淆 / 自动生成自签证书 / 端口清理
+#  - 更新: 新增 OpenClash 格式输出
 # ============================================================
 
 # 颜色定义
@@ -181,6 +182,20 @@ if systemctl is-active --quiet sing-box; then
     echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
+    echo -e "🐱 [OpenClash / Clash Meta 配置块]:"
+    echo -e "${YELLOW}"
+    cat <<EOF
+- name: "${NODE_NAME}"
+  type: hysteria2
+  server: "${PUBLIC_IP}"
+  port: ${PORT}
+  password: "${PASSWORD}"
+  sni: "bing.com"
+  skip-cert-verify: true
+  obfs: salamander
+  obfs-password: "${OBFS_PASS}"
+EOF
+    echo -e "${PLAIN}----------------------------------------"
     echo -e "📱 [Sing-box 客户端配置块]:"
     echo -e "${YELLOW}"
     cat <<EOF
@@ -205,3 +220,5 @@ EOF
 else
     echo -e "${RED}启动失败！请检查日志: journalctl -u sing-box -e${PLAIN}"
 fi
+
+}
