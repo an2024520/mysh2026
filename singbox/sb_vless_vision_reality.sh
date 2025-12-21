@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: VLESS + Vision + Reality (v1.0)
+#  Sing-box 节点新增: VLESS + Vision + Reality (v1.1)
 #  - 协议: VLESS (Vision流控)
-#  - 兼容: 支持 v2rayN / OpenClash / Clash Meta
-#  - 核心: 继承 AnyTLS 脚本的 Systemd 日志托管与防冲突逻辑
+#  - 修复: 增加"端口霸占"逻辑，自动清理占用端口的异种协议节点
+#  - 核心: Systemd 日志托管 (无 Permission denied 问题)
 # ============================================================
 
 # 颜色定义
@@ -70,8 +70,9 @@ while true; do
     [[ -z "$CUSTOM_PORT" ]] && PORT=443 && break
     
     if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
+        # 智能检测：如果端口已存在，提示将覆盖
         if grep -q "\"listen_port\": $CUSTOM_PORT" "$CONFIG_FILE"; then
-             echo -e "${YELLOW}提示: 端口 $CUSTOM_PORT 已存在，脚本将自动覆盖旧配置。${PLAIN}"
+             echo -e "${YELLOW}提示: 端口 $CUSTOM_PORT 已被占用，脚本将强制覆盖该端口的旧配置。${PLAIN}"
         fi
         PORT="$CUSTOM_PORT"
         break
@@ -134,9 +135,10 @@ NODE_TAG="vless-vision-${PORT}"
 tmp_log=$(mktemp)
 jq '.log.output = "" | .log.timestamp = false' "$CONFIG_FILE" > "$tmp_log" && mv "$tmp_log" "$CONFIG_FILE"
 
-# === 步骤 2: 清理旧同名 Tag ===
+# === 步骤 2: 端口霸占清理 (关键修复) ===
+# 删除所有 listen_port 等于当前目标端口的节点，无论它是 AnyTLS 还是 VLESS
 tmp0=$(mktemp)
-jq --arg tag "$NODE_TAG" 'del(.inbounds[] | select(.tag == $tag))' "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
+jq --argjson port "$PORT" 'del(.inbounds[] | select(.listen_port == $port))' "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
 
 # === 步骤 3: 构建 Sing-box 标准 VLESS Vision JSON ===
 NODE_JSON=$(jq -n \
@@ -251,4 +253,5 @@ EOF
 
 else
     echo -e "${RED}启动失败！请检查日志: journalctl -u sing-box -e${PLAIN}"
+    echo -e "${YELLOW}建议：使用菜单中的【Sing-box 核心环境管理 -> 安装/重置】来清理残留的错误配置。${PLAIN}"
 fi
