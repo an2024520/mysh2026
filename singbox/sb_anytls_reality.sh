@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: AnyTLS + Reality (v2.3 链接修复版)
+#  Sing-box 节点新增: AnyTLS + Reality (v2.4 链接格式修正)
 #  - 协议: AnyTLS (Sing-box 专属拟态协议)
-#  - 修复: v2rayN 分享链接参数修正 (fp=chrome)
+#  - 修复: 补全 headerType=none 参数，解决 v2rayN 指纹识别问题
 #  - 核心: Systemd 日志托管 (无 Permission denied 问题)
 # ============================================================
 
@@ -34,7 +34,7 @@ fi
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${YELLOW}配置文件不存在，正在初始化标准骨架...${PLAIN}"
     mkdir -p /usr/local/etc/sing-box
-    # 注意: output 为空字符串代表输出到 Console/Systemd，timestamp 设为 false (Systemd 自带时间戳)
+    # 注意: output 为空字符串代表输出到 Console/Systemd，timestamp 设为 false
     cat <<EOF > $CONFIG_FILE
 {
   "log": {
@@ -127,7 +127,7 @@ echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
 
 NODE_TAG="anytls-${PORT}"
 
-# === 关键步骤 1: 强制将 Log 改为 Console 输出 (解决 Permission Denied) ===
+# === 关键步骤 1: 强制将 Log 改为 Console 输出 ===
 tmp_log=$(mktemp)
 jq '.log.output = "" | .log.timestamp = false' "$CONFIG_FILE" > "$tmp_log" && mv "$tmp_log" "$CONFIG_FILE"
 
@@ -135,7 +135,7 @@ jq '.log.output = "" | .log.timestamp = false' "$CONFIG_FILE" > "$tmp_log" && mv
 tmp0=$(mktemp)
 jq --arg tag "$NODE_TAG" 'del(.inbounds[] | select(.tag == $tag))' "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
 
-# 构建新节点 JSON
+# 构建新节点 JSON (与 argosbx.sh 结构完全对齐)
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -150,10 +150,10 @@ NODE_JSON=$(jq -n \
         "listen_port": ($port | tonumber),
         "users": [
             {
-                "name": "user",
                 "password": $pass
             }
         ],
+        "padding_scheme": [],
         "tls": {
             "enabled": true,
             "server_name": $dest,
@@ -182,9 +182,9 @@ if systemctl is-active --quiet sing-box; then
     PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
     NODE_NAME="SB-AnyTLS-${PORT}"
     
-    # === 修复点: fingerprint 改为 fp ===
-    # v2rayN 识别标准: fp=chrome
-    SHARE_LINK="anytls://${USER_PASS}@${PUBLIC_IP}:${PORT}?security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
+    # === 关键修复: 完全复刻 argosbx.sh 链接格式 ===
+    # 增加 &headerType=none, 保持 fp=chrome, 移除 name=user 字段
+    SHARE_LINK="anytls://${USER_PASS}@${PUBLIC_IP}:${PORT}?security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#${NODE_NAME}"
 
     echo -e ""
     echo -e "${GREEN}========================================${PLAIN}"
@@ -193,9 +193,8 @@ if systemctl is-active --quiet sing-box; then
     echo -e "端口        : ${YELLOW}${PORT}${PLAIN}"
     echo -e "SNI (伪装)  : ${YELLOW}${SNI}${PLAIN}"
     echo -e "协议        : AnyTLS + Reality"
-    echo -e "日志模式    : ${SKYBLUE}Systemd Journal (无文件)${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "🚀 [v2rayN 分享链接] (v7.14+):"
+    echo -e "🚀 [v2rayN 分享链接] (完美适配版):"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
     echo -e "📱 [Sing-box 客户端配置块]:"
@@ -207,6 +206,7 @@ if systemctl is-active --quiet sing-box; then
   "server": "${PUBLIC_IP}",
   "server_port": ${PORT},
   "password": "${USER_PASS}",
+  "padding_scheme": [],
   "tls": {
     "enabled": true,
     "server_name": "${SNI}",
