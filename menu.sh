@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.7.1)
+#  全能协议管理中心 (Commander v3.8)
 #  - 架构: Core / Nodes / Routing / Tools
-#  - 特性: 动态链接 / 环境自洁 / 模块化路由 / Sing-box 支持
+#  - 特性: 动态链接 / 环境自洁 / 模块化路由 / 双核节点管理
 # ============================================================
 
 # 颜色定义
@@ -23,28 +23,38 @@ URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
 
 # [文件映射: 本地文件名 <-> sh_url.txt 中的 Key]
-# Xray 核心类
+# --- Xray 核心类 ---
 FILE_XRAY_CORE="xray_core.sh"
 FILE_XRAY_UNINSTALL="xray_uninstall_all.sh"
 
-# Sing-box 核心类 (修正文件名以匹配 sh_url.txt)
+# --- Sing-box 核心类 ---
 FILE_SB_CORE="sb_install_core.sh"
 FILE_SB_UNINSTALL="sb_uninstall.sh"
 
-# 基础设施类
+# --- 基础设施类 ---
 FILE_WIREPROXY="warp_wireproxy_socks5.sh"
 FILE_CF_TUNNEL="install_cf_tunnel_debian.sh"
 
-# 节点类
+# --- Xray 节点类 ---
 FILE_ADD_XHTTP="xray_vless_xhttp_reality.sh"
 FILE_ADD_VISION="xray_vless_vision_reality.sh"
 FILE_ADD_WS="xray_vless_ws_tls.sh"
 FILE_ADD_TUNNEL="xray_vless_ws_tunnel.sh"
 FILE_NODE_INFO="xray_get_node_details.sh"
 FILE_NODE_DEL="xray_module_node_del.sh"
+
+# --- Sing-box 节点类 (新增) ---
+FILE_SB_ADD_H2="sb_vless_h2_reality.sh"         # 对应 XHTTP
+FILE_SB_ADD_VISION="sb_vless_vision_reality.sh" # 对应 Vision
+FILE_SB_ADD_WS="sb_vless_ws_tls.sh"             # 对应 WS-TLS
+FILE_SB_ADD_TUNNEL="sb_vless_ws_tunnel.sh"      # 对应 WS-Tunnel
+FILE_SB_INFO="sb_get_node_details.sh"           # 对应 查看信息
+FILE_SB_DEL="sb_module_node_del.sh"             # 对应 删除节点
+
+# --- 其他节点类 ---
 FILE_HY2="hy2.sh"
 
-# 路由与工具类
+# --- 路由与工具类 ---
 FILE_NATIVE_WARP="xray_module_warp_native_route.sh"
 FILE_ATTACH="xray_module_attach_warp.sh"  # 旧挂载
 FILE_DETACH="xray_module_detach_warp.sh"  # 旧卸载
@@ -84,7 +94,7 @@ get_url_by_name() {
     grep "^$fname" "$LOCAL_LIST_FILE" | awk '{print $2}' | head -n 1
 }
 
-# 核心执行函数 (支持自动建目录 + 静默模式)
+# 核心执行函数
 check_run() {
     local script_name="$1"
     local no_pause="$2"
@@ -95,7 +105,7 @@ check_run() {
         local script_url=$(get_url_by_name "$script_name")
         if [[ -z "$script_url" ]]; then echo -e "${RED}错误: sh_url.txt 中未找到该文件记录。${PLAIN}"; read -p "按回车继续..."; return; fi
         
-        # 确保目录结构存在 (防止含路径的文件名报错)
+        # 确保目录结构存在
         mkdir -p "$(dirname "$script_name")"
         
         wget -qO "$script_name" "$script_url"
@@ -114,10 +124,10 @@ check_run() {
 }
 
 # ==========================================
-# 2. 菜单逻辑 (新架构)
+# 2. 菜单逻辑
 # ==========================================
 
-# --- [子菜单] Sing-box 核心环境管理 ---
+# --- [子菜单] Sing-box 核心环境 ---
 menu_singbox_env() {
     while true; do
         clear
@@ -131,6 +141,62 @@ menu_singbox_env() {
         case "$sb_choice" in
             1) check_run "$FILE_SB_CORE" ;;
             2) check_run "$FILE_SB_UNINSTALL" ;;
+            0) return ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- [子菜单] Xray 节点管理 ---
+menu_nodes_xray() {
+    while true; do
+        clear
+        echo -e "${BLUE}============= Xray 节点配置管理 =============${PLAIN}"
+        echo -e " ${SKYBLUE}1.${PLAIN} 新增: VLESS-XHTTP (Reality - 穿透强)"
+        echo -e " ${SKYBLUE}2.${PLAIN} 新增: VLESS-Vision (Reality - 极稳定)"
+        echo -e " ${SKYBLUE}3.${PLAIN} 新增: VLESS-WS-TLS (CDN / Nginx前置)"
+        echo -e " ${SKYBLUE}4.${PLAIN} 新增: VLESS-WS-Tunnel (Tunnel穿透专用)"
+        echo -e " ${SKYBLUE}5.${PLAIN} 查看: 当前节点链接 / 分享信息"
+        echo -e " ${SKYBLUE}6.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice
+        case "$choice" in
+            1) check_run "$FILE_ADD_XHTTP" ;;
+            2) check_run "$FILE_ADD_VISION" ;;
+            3) check_run "$FILE_ADD_WS" ;;
+            4) check_run "$FILE_ADD_TUNNEL" ;;
+            5) check_run "$FILE_NODE_INFO" ;;
+            6) check_run "$FILE_NODE_DEL" ;;
+            0) return ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- [子菜单] Sing-box 节点管理 ---
+menu_nodes_sb() {
+    while true; do
+        clear
+        echo -e "${BLUE}============= Sing-box 节点配置管理 =============${PLAIN}"
+        echo -e " ${SKYBLUE}1.${PLAIN} 新增: VLESS-H2-Reality (XHTTP 替代方案)"
+        echo -e " ${SKYBLUE}2.${PLAIN} 新增: VLESS-Vision-Reality (极稳定 - 推荐)"
+        echo -e " ${SKYBLUE}3.${PLAIN} 新增: VLESS-WS-TLS (CDN / Nginx前置)"
+        echo -e " ${SKYBLUE}4.${PLAIN} 新增: VLESS-WS-Tunnel (Tunnel穿透专用)"
+        echo -e " ${SKYBLUE}5.${PLAIN} 查看: 当前节点链接 / 分享信息"
+        echo -e " ${SKYBLUE}6.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice
+        case "$choice" in
+            1) check_run "$FILE_SB_ADD_H2" ;;
+            2) check_run "$FILE_SB_ADD_VISION" ;;
+            3) check_run "$FILE_SB_ADD_WS" ;;
+            4) check_run "$FILE_SB_ADD_TUNNEL" ;;
+            5) check_run "$FILE_SB_INFO" ;;
+            6) check_run "$FILE_SB_DEL" ;;
             0) return ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
@@ -158,7 +224,7 @@ menu_core() {
         case "$choice" in
             1) check_run "$FILE_XRAY_CORE" ;;
             2) check_run "$FILE_XRAY_UNINSTALL" ;;
-            3) menu_singbox_env ;; # 进入 Sing-box 子菜单
+            3) menu_singbox_env ;;
             4) check_run "$FILE_WIREPROXY" ;;
             5) check_run "$FILE_CF_TUNNEL" ;;
             0) break ;;
@@ -167,35 +233,23 @@ menu_core() {
     done
 }
 
-# --- 2. 节点管理 ---
+# --- 2. 节点配置管理 (入口) ---
 menu_nodes() {
     while true; do
         clear
         echo -e "${BLUE}============= 节点配置管理 (Nodes) =============${PLAIN}"
-        echo -e " [Xray 核心]"
-        echo -e " ${SKYBLUE}1.${PLAIN} 新增: VLESS-XHTTP (Reality - 穿透强)"
-        echo -e " ${SKYBLUE}2.${PLAIN} 新增: VLESS-Vision (Reality - 极稳定)"
-        echo -e " ${SKYBLUE}3.${PLAIN} 新增: VLESS-WS-TLS (CDN / Nginx前置)"
-        echo -e " ${SKYBLUE}4.${PLAIN} 新增: VLESS-WS-Tunnel (Tunnel穿透专用)"
-        echo -e " ${SKYBLUE}5.${PLAIN} 查看: 当前节点链接 / 分享信息"
-        echo -e " ${SKYBLUE}6.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
+        echo -e " ${SKYBLUE}1.${PLAIN} Xray 核心节点管理 ${YELLOW}(成熟稳定)${PLAIN}"
+        echo -e " ${SKYBLUE}2.${PLAIN} Sing-box 节点管理 ${YELLOW}(轻量高效)${PLAIN}"
         echo -e " ----------------------------------------------"
-        echo -e " [其他核心]"
-        echo -e " ${SKYBLUE}7.${PLAIN} 独立 Hysteria 2 节点管理"
-        echo -e " ${SKYBLUE}8.${PLAIN} Sing-box 节点管理 (预留)"
+        echo -e " ${SKYBLUE}3.${PLAIN} 独立 Hysteria 2 节点管理"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo -e ""
         read -p "请选择: " choice
         case "$choice" in
-            1) check_run "$FILE_ADD_XHTTP" ;;
-            2) check_run "$FILE_ADD_VISION" ;;
-            3) check_run "$FILE_ADD_WS" ;;
-            4) check_run "$FILE_ADD_TUNNEL" ;;
-            5) check_run "$FILE_NODE_INFO" ;;
-            6) check_run "$FILE_NODE_DEL" ;;
-            7) check_run "$FILE_HY2" ;;
-            8) echo "敬请期待"; sleep 1 ;;
+            1) menu_nodes_xray ;;
+            2) menu_nodes_sb ;;
+            3) check_run "$FILE_HY2" ;;
             0) break ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
@@ -221,9 +275,7 @@ menu_routing() {
         echo -e ""
         read -p "请选择: " choice
         case "$choice" in
-            1) 
-                check_run "$FILE_NATIVE_WARP" "true" 
-                ;; 
+            1) check_run "$FILE_NATIVE_WARP" "true" ;; 
             2) 
                 while true; do
                     clear
@@ -264,7 +316,7 @@ init_urls
 while true; do
     clear
     echo -e "${GREEN}============================================${PLAIN}"
-    echo -e "${GREEN}      全能协议管理中心 (Commander v3.7.1)     ${PLAIN}"
+    echo -e "${GREEN}      全能协议管理中心 (Commander v3.8)      ${PLAIN}"
     echo -e "${GREEN}============================================${PLAIN}"
     
     # 简单的状态检查 (Xray & Sing-box)
