@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Native WARP 增强模块 (Clean & Pure Edition)
+#  Native WARP 增强模块 (Clean & Pure Edition v1.1)
 #  - 无需 Wireproxy，由 Xray 内核直接连接 Cloudflare
 #  - 纯净模式：移除所有硬编码共享 IP，确保独享与安全
+#  - 优化: 延迟加载 Python，纯 Shell 解析 Base64
 # ============================================================
 
 # --- 1. 全局配置 (与 xray_core.sh 严格配套) ---
@@ -19,7 +20,7 @@ SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 GRAY='\033[0;37m'
 
-# --- 2. 依赖检查 ---
+# --- 2. 依赖检查 (移除 Python 强制检查) ---
 check_dependencies() {
     # jq 是修改 config.json 的核心工具，xray_core.sh 通常已安装
     if ! command -v jq >/dev/null 2>&1; then
@@ -30,14 +31,41 @@ check_dependencies() {
             yum install -y jq
         fi
     fi
-    # python3 用于计算 Reserved 值
+    # 提示缺少 od (用于纯 Shell 解码)
+    if ! command -v od >/dev/null 2>&1; then
+        echo -e "${GRAY}提示: 系统未安装 od 工具，手动解码可能需要依赖 Python。${PLAIN}"
+    fi
+}
+
+# 按需安装 Python (仅在自动注册或解码失败时调用)
+ensure_python() {
     if ! command -v python3 >/dev/null 2>&1; then
-        echo -e "${YELLOW}正在安装 Python3...${PLAIN}"
+        echo -e "${YELLOW}该功能需要 Python3 支持 (计算/解码 Reserved)，正在安装...${PLAIN}"
         if [ -f /etc/debian_version ]; then
             apt-get update && apt-get install -y python3
         elif [ -f /etc/redhat-release ]; then
             yum install -y python3
         fi
+        
+        if ! command -v python3 >/dev/null 2>&1; then
+             echo -e "${RED}Python3 安装失败！${PLAIN}"
+             return 1
+        fi
+    fi
+    return 0
+}
+
+# 纯 Shell 实现 Base64 转数组 [1, 2, 3]
+base64_to_reserved_shell() {
+    local input="$1"
+    # base64 解码 -> od 转十进制 -> tr 换行转逗号
+    local bytes=$(echo "$input" | base64 -d 2>/dev/null | od -An -t u1 | tr -s ' ' ',')
+    # 清理头尾
+    bytes=$(echo "$bytes" | sed 's/^,//;s/,$//;s/ //g')
+    if [ -n "$bytes" ]; then
+        echo "[$bytes]"
+    else
+        echo ""
     fi
 }
 
@@ -49,7 +77,7 @@ get_warp_credentials() {
     echo -e "Native 模式需要 WARP 账户的三要素：Private Key, IPv6 Address, Reserved"
     echo -e "----------------------------------------------------"
     echo -e " 1. 自动注册 (推荐: 使用 wgcf 生成独享账号)"
-    echo -e " 2. 手动输入 (已有账号，需填入完整信息)"
+    echo -e " 2. 手动输入 (已有账号，支持 Base64 / 数组格式)"
     echo -e "----------------------------------------------------"
     read -p "请选择: " choice
 
@@ -58,6 +86,9 @@ get_warp_credentials() {
     local wp_res=""
 
     if [ "$choice" == "1" ]; then
+        # 自动注册必须依赖 Python 计算 Reserved
+        ensure_python || return 1
+        
         echo -e "${YELLOW}正在准备 wgcf 环境...${PLAIN}"
         
         local arch=$(uname -m)
@@ -120,10 +151,35 @@ get_warp_credentials() {
         echo -e "(例如: 2606:4700:110:xxxx:xxxx:xxxx:xxxx:xxxx)"
         read -r wp_ip
         
-        echo -e "${YELLOW}请输入 Reserved 值 (格式如 [123, 45, 67]):${PLAIN}"
-        echo -e "(提示: 如果不知道，可尝试填 [0, 0, 0])"
-        read -r wp_res
+        echo -e "${YELLOW}请输入 Reserved 值:${PLAIN}"
+        echo -e " - Base64 格式 (如 c+kIBA==)"
+        echo -e " - 数组格式 (如 [115, 233, 8])"
+        read -r res_input
         
+        if [[ -z "$res_input" ]]; then
+            wp_res="[0, 0, 0]"
+        elif [[ "$res_input" == *"["* ]]; then
+            # 已经是数组格式
+            wp_res="$res_input"
+        else
+            # 尝试纯 Shell 解码 Base64
+            wp_res=$(base64_to_reserved_shell "$res_input")
+            
+            # 如果 Shell 解码失败 (例如无 od)，回退到 Python
+            if [[ -z "$wp_res" ]]; then
+                echo -e "${YELLOW}Shell 解码失败，尝试使用 Python 解码...${PLAIN}"
+                ensure_python
+                if command -v python3 >/dev/null 2>&1; then
+                    wp_res=$(python3 -c "import base64; d=base64.b64decode('${res_input}'); print(f'[{d[0]}, {d[1]}, {d[2]}]')" 2>/dev/null)
+                else
+                    echo -e "${RED}无法解析 Reserved，将使用默认值 [0, 0, 0] (可能导致连接失败)${PLAIN}"
+                    wp_res="[0, 0, 0]"
+                fi
+            fi
+        fi
+        
+        echo -e "识别到的 Reserved: ${GREEN}$wp_res${PLAIN}"
+
         if [ -z "$wp_key" ] || [ -z "$wp_ip" ]; then
             echo -e "${RED}错误：私钥和 IP 不能为空！${PLAIN}"
             return 1
@@ -310,7 +366,7 @@ show_warp_menu() {
         echo -e " 凭证状态: [$status_text]   当前模式: [$current_mode]"
         echo -e "----------------------------------------------------"
         echo -e " [基础账号]"
-        echo -e " 1. 注册/配置 WARP 凭证 (自动获取 或 手动输入)" # <--- 修正了这里的文案
+        echo -e " 1. 注册/配置 WARP 凭证 (自动获取 或 手动输入)" 
         echo -e " 2. 查看当前凭证信息"
         echo -e ""
         echo -e " [策略模式 - 单选]"
@@ -330,7 +386,7 @@ show_warp_menu() {
         read -p "请输入选项: " choice
 
         case "$choice" in
-            1) get_warp_credentials ;; # 进入后会再次询问 1.自动 2.手动
+            1) get_warp_credentials ;; 
             2) 
                 if [ -f "$WARP_CONF_FILE" ]; then
                     source "$WARP_CONF_FILE"
