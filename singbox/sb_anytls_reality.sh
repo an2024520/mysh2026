@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: AnyTLS + Reality + 智能端口检测
+#  Sing-box 节点新增: AnyTLS + Reality + 智能防冲突
 #  - 协议: AnyTLS (Sing-box 专属拟态协议)
-#  - 架构: 严格复刻 Xray 脚本交互体验
+#  - 修复: 自动覆盖旧的同名/同端口节点，防止启动报错
 #  - 兼容: 支持 v2rayN (v7.14+) 分享链接
 # ============================================================
 
@@ -69,12 +69,12 @@ while true; do
     [[ -z "$CUSTOM_PORT" ]] && PORT=8443 && break
     
     if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
+        # 智能检测：如果端口已存在，提示将覆盖
         if grep -q "\"listen_port\": $CUSTOM_PORT" "$CONFIG_FILE"; then
-             echo -e "${RED}警告: 端口 $CUSTOM_PORT 似乎已被之前的节点占用了，请换一个！${PLAIN}"
-        else
-             PORT="$CUSTOM_PORT"
-             break
+             echo -e "${YELLOW}提示: 端口 $CUSTOM_PORT 已存在，脚本将自动覆盖旧配置。${PLAIN}"
         fi
+        PORT="$CUSTOM_PORT"
+        break
     else
         echo -e "${RED}无效端口。${PLAIN}"
     fi
@@ -122,11 +122,17 @@ if [[ -z "$PRIVATE_KEY" ]]; then
     exit 1
 fi
 
-# 5. 构建节点 JSON
-echo -e "${YELLOW}正在将节点注入配置文件...${PLAIN}"
+# 5. 构建与注入节点
+echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
 
 NODE_TAG="anytls-${PORT}"
 
+# === 关键修复步骤：先删除旧的同名 tag ===
+# 防止 duplicate inbound tag 错误
+tmp0=$(mktemp)
+jq --arg tag "$NODE_TAG" 'del(.inbounds[] | select(.tag == $tag))' "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
+
+# 构建新节点 JSON
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -160,6 +166,7 @@ NODE_JSON=$(jq -n \
         }
     }')
 
+# 插入新节点
 tmp=$(mktemp)
 jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
@@ -171,22 +178,22 @@ if systemctl is-active --quiet sing-box; then
     PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
     NODE_NAME="SB-AnyTLS-${PORT}"
     
-    # === 构建 v2rayN 支持的 anytls:// 链接 ===
-    # 格式: anytls://password@ip:port?security=reality&sni=xxx&fp=chrome&pbk=xxx&sid=xxx#Name
+    # 构建 v2rayN 链接
     SHARE_LINK="anytls://${USER_PASS}@${PUBLIC_IP}:${PORT}?security=reality&sni=${SNI}&fingerprint=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
 
     echo -e ""
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}    [Sing-box] 节点已追加成功！        ${PLAIN}"
+    echo -e "${GREEN}    [Sing-box] 节点已追加/更新成功！    ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "端口        : ${YELLOW}${PORT}${PLAIN}"
     echo -e "SNI (伪装)  : ${YELLOW}${SNI}${PLAIN}"
     echo -e "协议        : AnyTLS + Reality"
+    echo -e "状态        : ${GREEN}运行中${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "🚀 [v2rayN 分享链接] (v7.14+ 版本支持):"
+    echo -e "🚀 [v2rayN 分享链接] (v7.14+):"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "📱 [Sing-box 客户端配置块] (通用):"
+    echo -e "📱 [Sing-box 客户端配置块]:"
     echo -e "${YELLOW}"
     cat <<EOF
 {
@@ -213,4 +220,5 @@ EOF
     echo -e "${PLAIN}----------------------------------------"
 else
     echo -e "${RED}启动失败！请检查日志: journalctl -u sing-box -e${PLAIN}"
+    echo -e "${YELLOW}可能原因：配置文件格式错误或端口仍被占用。${PLAIN}"
 fi
