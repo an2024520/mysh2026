@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (SB-Commander v6.0 Refactor)
-#  - 核心重构: 彻底适配 Sing-box 1.12+ Endpoint 架构
-#  - 迁移: Outbounds -> Endpoints
-#  - 字段修正: server/local_address -> address, server_port -> port
-#  - 完美解决: "legacy wireguard outbound is deprecated"
+#  Sing-box Native WARP 管理模块 (SB-Commander v6.1)
+#  - 核心修复: 补全 endpoints 模式下 peers 的 allowed_ips (必填)
+#  - 架构: 适配 Sing-box 1.12+ (Endpoints + Address/Port)
+#  - 体验: 修复临时文件删除报错 / IPv4 默认值优化
 # ============================================================
 
 RED='\033[0;31m'
@@ -158,10 +157,10 @@ write_warp_config() {
     if [[ -n "$v4" && "$v4" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]'); fi
     if [[ -n "$v6" && "$v6" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]'); fi
     
-    # === 核心重构: Endpoint 结构 + 新字段名 ===
-    # 1. 使用 "address" 替代 "local_address"
-    # 2. Peer 中使用 "address"/"port" 替代 "server"/"server_port"
-    # 3. "system": false (使用用户态网络栈，避免侵入宿主机网络)
+    # === 核心重构: Endpoint 结构 + allowed_ips ===
+    # 1. system: false 避免创建物理网卡冲突
+    # 2. address / port 标准新字段
+    # 3. allowed_ips: ["0.0.0.0/0", "::/0"] (必填修复)
     local warp_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -178,7 +177,8 @@ write_warp_config() {
                     "address": "engage.cloudflareclient.com", 
                     "port": 2408, 
                     "public_key": $pub, 
-                    "reserved": $res 
+                    "reserved": $res,
+                    "allowed_ips": ["0.0.0.0/0", "::/0"]
                 }
             ] 
         }')
@@ -192,18 +192,16 @@ write_warp_config() {
     # 1. 确保 endpoints 数组存在
     jq 'if .endpoints == null then .endpoints = [] else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
-    # 2. 清理 Outbounds 中的旧 WARP (防止 Legacy 报错)
+    # 2. 强力清理旧数据 (Outbounds & Endpoints)
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .tag == "warp-out"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-
-    # 3. 清理 Endpoints 中的旧 WARP (防止重复)
     jq 'del(.endpoints[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
-    # 4. 写入 Endpoints
+    # 3. 写入新的 WARP Endpoint
     jq --argjson new "$warp_json" '.endpoints += [$new]' "$CONFIG_FILE" > "$TMP_CONF"
     
+    # 4. 修复文件移动逻辑 (move 之后不需要 rm)
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
-        rm "$TMP_CONF"
         echo -e "${GREEN}WARP Endpoint 配置完成。${PLAIN}"
         restart_sb
     else
@@ -303,7 +301,7 @@ show_menu() {
         local ver=$(sing-box version 2>/dev/null | head -n1 | awk '{print $3}')
         
         echo -e "================ Native WARP 配置向导 (Sing-box) ================"
-        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(适配 1.12+ Endpoint)${PLAIN}"
+        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(v6.1 适配)${PLAIN}"
         echo -e " 配置文件: ${SKYBLUE}$CONFIG_FILE${PLAIN}"
         echo -e " 凭证状态: [$status_text]"
         echo -e "----------------------------------------------------"
