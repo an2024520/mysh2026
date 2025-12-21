@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: AnyTLS + Reality (v2.4 链接格式修正)
+#  Sing-box 节点新增: AnyTLS + Reality (v2.5 端口霸占版)
 #  - 协议: AnyTLS (Sing-box 专属拟态协议)
-#  - 修复: 补全 headerType=none 参数，解决 v2rayN 指纹识别问题
-#  - 核心: Systemd 日志托管 (无 Permission denied 问题)
+#  - 修复: 增加"端口霸占"逻辑，自动清理占用端口的异种协议节点
+#  - 兼容: 完美适配 v2rayN 分享链接格式
 # ============================================================
 
 # 颜色定义
@@ -30,7 +30,7 @@ if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
     apt update -y && apt install -y jq openssl
 fi
 
-# 2. 初始化配置文件 (若不存在)
+# 2. 初始化配置文件 (Systemd 日志托管模式)
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${YELLOW}配置文件不存在，正在初始化标准骨架...${PLAIN}"
     mkdir -p /usr/local/etc/sing-box
@@ -70,8 +70,9 @@ while true; do
     [[ -z "$CUSTOM_PORT" ]] && PORT=8443 && break
     
     if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
+        # 智能检测：如果端口已存在，提示将覆盖
         if grep -q "\"listen_port\": $CUSTOM_PORT" "$CONFIG_FILE"; then
-             echo -e "${YELLOW}提示: 端口 $CUSTOM_PORT 已存在，脚本将自动覆盖旧配置。${PLAIN}"
+             echo -e "${YELLOW}提示: 端口 $CUSTOM_PORT 已被占用，脚本将强制覆盖该端口的旧配置。${PLAIN}"
         fi
         PORT="$CUSTOM_PORT"
         break
@@ -127,15 +128,16 @@ echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
 
 NODE_TAG="anytls-${PORT}"
 
-# === 关键步骤 1: 强制将 Log 改为 Console 输出 ===
+# === 步骤 1: 强制日志托管 (防止 Permission Denied) ===
 tmp_log=$(mktemp)
 jq '.log.output = "" | .log.timestamp = false' "$CONFIG_FILE" > "$tmp_log" && mv "$tmp_log" "$CONFIG_FILE"
 
-# === 关键步骤 2: 清理旧的同名 tag ===
+# === 步骤 2: 端口霸占清理 (关键同步点) ===
+# 删除所有 listen_port 等于当前目标端口的节点，防止 bind error
 tmp0=$(mktemp)
-jq --arg tag "$NODE_TAG" 'del(.inbounds[] | select(.tag == $tag))' "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
+jq --argjson port "$PORT" 'del(.inbounds[] | select(.listen_port == $port))' "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
 
-# 构建新节点 JSON (与 argosbx.sh 结构完全对齐)
+# 构建新节点 JSON (保持与 argosbx.sh 结构一致)
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -174,7 +176,7 @@ tmp=$(mktemp)
 jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
 # 6. 重启与输出
-echo -e "${YELLOW}正在重启服务 (日志将输出至 Systemd)...${PLAIN}"
+echo -e "${YELLOW}正在重启服务...${PLAIN}"
 systemctl restart sing-box
 sleep 2
 
@@ -182,8 +184,7 @@ if systemctl is-active --quiet sing-box; then
     PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
     NODE_NAME="SB-AnyTLS-${PORT}"
     
-    # === 关键修复: 完全复刻 argosbx.sh 链接格式 ===
-    # 增加 &headerType=none, 保持 fp=chrome, 移除 name=user 字段
+    # 构造 v2rayN 链接 (完美适配版)
     SHARE_LINK="anytls://${USER_PASS}@${PUBLIC_IP}:${PORT}?security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#${NODE_NAME}"
 
     echo -e ""
@@ -194,7 +195,7 @@ if systemctl is-active --quiet sing-box; then
     echo -e "SNI (伪装)  : ${YELLOW}${SNI}${PLAIN}"
     echo -e "协议        : AnyTLS + Reality"
     echo -e "----------------------------------------"
-    echo -e "🚀 [v2rayN 分享链接] (完美适配版):"
+    echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
     echo -e "📱 [Sing-box 客户端配置块]:"
