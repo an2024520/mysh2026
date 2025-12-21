@@ -44,7 +44,7 @@ FILE_NODE_INFO="xray_get_node_details.sh"
 FILE_NODE_DEL="xray_module_node_del.sh"
 
 # --- Sing-box 节点类 (新增) ---
-FILE_SB_ADD_H2="sb_vless_h2_reality.sh"         # 对应 XHTTP
+FILE_SB_ADD_ANYTLS="sb_anytls_reality.sh"         # 对应 XHTTP
 FILE_SB_ADD_VISION="sb_vless_vision_reality.sh" # 对应 Vision
 FILE_SB_ADD_WS="sb_vless_ws_tls.sh"             # 对应 WS-TLS
 FILE_SB_ADD_TUNNEL="sb_vless_ws_tunnel.sh"      # 对应 WS-Tunnel
@@ -191,7 +191,7 @@ menu_nodes_sb() {
         echo -e ""
         read -p "请选择: " choice
         case "$choice" in
-            1) check_run "$FILE_SB_ADD_H2" ;;
+            1) check_run "$FILE_SB_ADD_ANYTLS" ;;
             2) check_run "$FILE_SB_ADD_VISION" ;;
             3) check_run "$FILE_SB_ADD_WS" ;;
             4) check_run "$FILE_SB_ADD_TUNNEL" ;;
