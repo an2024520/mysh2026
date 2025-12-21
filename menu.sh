@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.8)
+#  全能协议管理中心 (Commander v3.9)
 #  - 架构: Core / Nodes / Routing / Tools
 #  - 特性: 动态链接 / 环境自洁 / 模块化路由 / 双核节点管理
 # ============================================================
@@ -196,7 +196,7 @@ menu_nodes_sb() {
             3) check_run "$FILE_SB_ADD_WS" ;;
             4) check_run "$FILE_SB_ADD_TUNNEL" ;;
             5) 
-                # --- 手动下载/更新检查 (因为 check_run 不支持传参，所以这里手动处理) ---
+                # --- 手动下载/更新检查 ---
                 if [[ ! -f "$FILE_SB_INFO" ]]; then
                     echo -e "${YELLOW}正在获取组件 [$FILE_SB_INFO] ...${PLAIN}"
                     local script_url=$(get_url_by_name "$FILE_SB_INFO")
@@ -216,14 +216,34 @@ menu_nodes_sb() {
 
                 echo -e ">>> 查看 Sing-box 节点链接 (VLESS/VMess/Hysteria2)"
                 
-                # 1. 确认配置文件路径
-                read -p "请输入 Sing-box 配置文件路径 (默认: /etc/sing-box/config.json): " SB_CONFIG_PATH
-                SB_CONFIG_PATH=${SB_CONFIG_PATH:-"/etc/sing-box/config.json"}
+                # 1. 智能查找配置文件路径 (优先查找 /usr/local/etc，其次是 /etc)
+                local detected_path=""
+                local paths=("/usr/local/etc/sing-box/config.json" "/etc/sing-box/config.json" "$HOME/sing-box/config.json")
+                
+                for p in "${paths[@]}"; do
+                    if [[ -f "$p" ]]; then
+                        detected_path="$p"
+                        break
+                    fi
+                done
+
+                # 如果没找到，给一个默认值提示用户
+                if [[ -z "$detected_path" ]]; then
+                    detected_path="/usr/local/etc/sing-box/config.json"
+                    echo -e "${YELLOW}提示: 未自动检测到配置文件，将使用默认路径。${PLAIN}"
+                else
+                    echo -e "${GREEN}已自动检测到配置文件: $detected_path${PLAIN}"
+                fi
+
+                # 2. 确认配置文件路径 (用户可以回车确认，也可以修改)
+                read -p "确认 Sing-box 配置文件路径 [默认: $detected_path]: " SB_CONFIG_PATH
+                SB_CONFIG_PATH=${SB_CONFIG_PATH:-"$detected_path"}
                 
                 if [ ! -f "$SB_CONFIG_PATH" ]; then
                     echo -e "${RED}错误: 找不到配置文件 $SB_CONFIG_PATH${PLAIN}"
+                    echo -e "请检查是否已安装 Sing-box 核心 (主菜单 -> 1 -> 3 -> 1)"
                 else
-                    # 2. 检查 jq
+                    # 3. 检查 jq
                     if ! command -v jq &> /dev/null; then
                         echo -e "${RED}错误: 系统未安装 jq，无法列出节点。${PLAIN}"
                         echo -e "建议运行核心安装脚本或手动安装 jq (apt install jq / yum install jq)"
@@ -233,11 +253,11 @@ menu_nodes_sb() {
                         jq -r '.outbounds[] | select(.type != "direct" and .type != "block" and .type != "dns" and .type != "selector" and .type != "urltest") | .tag' "$SB_CONFIG_PATH"
                         echo "----------------------------------------"
                         
-                        # 3. 输入 Tag
+                        # 4. 输入 Tag
                         read -p "请输入要导出的节点 Tag (复制上面的名字): " NODE_TAG
                         
                         if [ -n "$NODE_TAG" ]; then
-                            # 4. 调用脚本
+                            # 5. 调用脚本
                             ./"$FILE_SB_INFO" "$SB_CONFIG_PATH" "$NODE_TAG"
                         else
                             echo "未输入 Tag，操作取消。"
@@ -245,7 +265,6 @@ menu_nodes_sb() {
                     fi
                 fi
                 
-                # 暂停查看结果
                 echo -e ""; read -p "操作结束，按回车键继续..."
                 ;;
             6) check_run "$FILE_SB_DEL" ;;
@@ -368,7 +387,7 @@ init_urls
 while true; do
     clear
     echo -e "${GREEN}============================================${PLAIN}"
-    echo -e "${GREEN}      全能协议管理中心 (Commander v3.8)      ${PLAIN}"
+    echo -e "${GREEN}      全能协议管理中心 (Commander v3.9)      ${PLAIN}"
     echo -e "${GREEN}============================================${PLAIN}"
     
     # 简单的状态检查 (Xray & Sing-box)
