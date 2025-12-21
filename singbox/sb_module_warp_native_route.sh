@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (SB-Commander v6.2 LogicFix)
-#  - 逻辑修复: 杜绝“有规则无节点”的断链问题
-#  - 新增特性: 凭证持久化保存 (warp_credentials.conf)
-#  - 智能拦截: 未配置节点时禁止添加路由规则
+#  Sing-box Native WARP 管理模块 (SB-Commander v6.3 LoopFix)
+#  - 核心修复: 全局接管模式改为“全节点接管”，防止路由死循环
+#  - 逻辑优化: 自动抓取所有入站节点(Inbounds)应用规则
+#  - 稳定性: 提升 Endpoint 模式下的连通率
 # ============================================================
 
 RED='\033[0;31m'
@@ -30,7 +30,6 @@ if [[ -z "$CONFIG_FILE" ]]; then
     exit 1
 fi
 
-# 确保配置目录存在以便保存凭证
 mkdir -p "$(dirname "$CRED_FILE")"
 
 check_dependencies() {
@@ -91,7 +90,6 @@ base64_to_reserved_shell() {
     [[ -n "$bytes" ]] && echo "[$bytes]" || echo ""
 }
 
-# 保存凭证到本地
 save_credentials() {
     cat > "$CRED_FILE" <<EOF
 PRIV_KEY="$1"
@@ -128,7 +126,6 @@ register_warp() {
 }
 
 manual_warp() {
-    # 尝试读取上次保存的凭证
     local def_priv=""
     local def_pub=""
     local def_v4=""
@@ -201,7 +198,6 @@ write_warp_config() {
     if [[ -n "$v4" && "$v4" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]'); fi
     if [[ -n "$v6" && "$v6" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]'); fi
     
-    # Endpoints 结构 (v6.1+)
     local warp_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -246,24 +242,16 @@ write_warp_config() {
 }
 
 # ==========================================
-# 3. 路由管理 (带前置检查)
+# 3. 路由管理
 # ==========================================
 
-# 关键修复：检查是否存在 WARP 节点
 ensure_warp_exists() {
-    # 检查 endpoints 中是否有 WARP
-    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then 
-        return 0
-    fi
-    # 兼容性检查 outbounds
-    if jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then 
-        return 0 
-    fi
+    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then return 0; fi
+    if jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then return 0; fi
     
     echo -e "${RED}错误：未检测到 WARP 节点配置！${PLAIN}"
     echo -e "${YELLOW}请先执行 [1. 注册/配置 WARP 凭证] 添加节点，再设置分流规则。${PLAIN}"
     
-    # 尝试自动恢复
     if [[ -f "$CRED_FILE" ]]; then
         echo -e "检测到历史凭证备份，是否自动恢复？[y/n]"
         read -p "选择: " recover
@@ -303,15 +291,28 @@ mode_stream() {
     apply_routing_rule "$rule"
 }
 
+# 核心修复：全局模式不再接管所有网络流量，改为接管所有入站(Inbound)流量
+# 避免接管 WARP 自身的握手流量导致死循环
 mode_global() {
     ensure_warp_exists || return
+    
+    # 获取所有 inbound tags (排除空值)
+    local ib_tags=$(jq -c '[.inbounds[].tag]' "$CONFIG_FILE")
+    if [[ "$ib_tags" == "[]" || -z "$ib_tags" ]]; then
+        echo -e "${RED}错误: 未找到任何入站节点(Inbounds)，无法应用全局接管。${PLAIN}"
+        echo -e "全局接管模式需要至少一个入站节点（如 vless-in, hy2-in 等）。"
+        return
+    fi
+
+    echo -e "当前将接管以下入站流量: ${SKYBLUE}$ib_tags${PLAIN}"
     echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全局"
     read -p "选择: " sub
+    
     local rule=""
     case "$sub" in
-        a) rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }') ;;
-        b) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }') ;;
-        c) rule=$(jq -n '{ "network": ["tcp","udp"], "outbound": "WARP" }') ;;
+        a) rule=$(jq -n --argjson ib "$ib_tags" '{ "inbound": $ib, "ip_version": 4, "outbound": "WARP" }') ;;
+        b) rule=$(jq -n --argjson ib "$ib_tags" '{ "inbound": $ib, "ip_version": 6, "outbound": "WARP" }') ;;
+        c) rule=$(jq -n --argjson ib "$ib_tags" '{ "inbound": $ib, "outbound": "WARP" }') ;;
     esac
     apply_routing_rule "$rule"
 }
@@ -363,7 +364,7 @@ show_menu() {
         local ver=$(sing-box version 2>/dev/null | head -n1 | awk '{print $3}')
         
         echo -e "================ Native WARP 配置向导 (Sing-box) ================"
-        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(v6.2 逻辑修复)${PLAIN}"
+        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(v6.3)${PLAIN}"
         echo -e " 配置文件: ${SKYBLUE}$CONFIG_FILE${PLAIN}"
         echo -e " 凭证状态: [$status_text]"
         echo -e "----------------------------------------------------"
