@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.9.4)
+#  全能协议管理中心 (Commander v3.9.5)
 #  - 架构: Core / Nodes / Routing / Tools
 #  - 特性: 动态链接 / 环境自洁 / 模块化路由 / 双核节点管理 / 强刷缓存
-#  - 更新: 增加【返回主菜单】一键跳转功能
+#  - 更新: 集成 IPv6-Only 环境自动检测与 NAT64 修正功能
 # ============================================================
 
 # 颜色定义
@@ -66,6 +66,50 @@ FILE_BOOST="xray_module_boost.sh"
 
 # --- 引擎函数 ---
 
+# [新增功能] 检测 IPv6-Only 环境并询问是否修复
+check_ipv6_environment() {
+    # 尝试连接 IPv4 DNS (1.1.1.1) 检测是否有 IPv4 能力
+    if curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null 2>&1; then
+        # 具备 IPv4 能力，直接跳过
+        return
+    fi
+
+    echo -e "${YELLOW}======================================================${PLAIN}"
+    echo -e "${RED}⚠️  检测到当前环境为纯 IPv6 (IPv6-Only)！${PLAIN}"
+    echo -e "${GRAY}当前机器无法访问 IPv4 网络，这将导致无法下载 GitHub 资源或 Docker 镜像。${PLAIN}"
+    echo -e "${GRAY}本脚本集成了 NAT64/DNS64 (基于 Trex.fi) 自动配置功能。${PLAIN}"
+    echo -e ""
+    read -p "是否立即配置 NAT64 以获得 IPv4 访问能力? (y/n, 默认 y): " fix_choice
+    fix_choice=${fix_choice:-y}
+
+    if [[ "$fix_choice" == "y" ]]; then
+        echo -e "${YELLOW}正在配置 NAT64/DNS64...${PLAIN}"
+        
+        # 1. 备份 DNS
+        if [ ! -f "/etc/resolv.conf.bak.nat64" ]; then
+            cp /etc/resolv.conf /etc/resolv.conf.bak.nat64
+            echo -e "${GREEN}已备份原 DNS 至 /etc/resolv.conf.bak.nat64${PLAIN}"
+        fi
+
+        # 2. 注入 DNS64 地址 (Trex.fi)
+        # 2001:67c:2b0::4 和 2001:67c:2b0::6
+        echo -e "nameserver 2001:67c:2b0::4\nnameserver 2001:67c:2b0::6" > /etc/resolv.conf
+
+        # 3. 验证连接
+        sleep 1
+        if curl -4 -s --connect-timeout 5 https://www.google.com >/dev/null 2>&1; then
+            echo -e "${GREEN}🎉 成功！已获得 IPv4 访问能力。${PLAIN}"
+        else
+            echo -e "${RED}❌ 警告：NAT64 配置后仍无法连接 IPv4，请检查防火墙 UDP 53 端口。${PLAIN}"
+        fi
+        echo -e ""
+        read -p "配置完成，按回车继续..."
+    else
+        echo -e "${GRAY}已跳过 NAT64 配置。请注意：后续下载可能会失败。${PLAIN}"
+        echo -e ""
+    fi
+}
+
 check_dir_clean() {
     local current_script=$(basename "$0")
     local file_count=$(ls -1 | grep -v "^$current_script$" | wc -l)
@@ -88,7 +132,7 @@ init_urls() {
     # 【更新】加入时间戳 ?t=$(date +%s) 强制刷新 GitHub 缓存
     wget -T 5 -qO "$LOCAL_LIST_FILE" "${URL_LIST_FILE}?t=$(date +%s)"
     if [[ $? -ne 0 ]]; then
-        if [[ -f "$LOCAL_LIST_FILE" ]]; then echo -e "${YELLOW}网络异常，使用本地缓存列表。${PLAIN}"; else echo -e "${RED}致命错误: 无法获取脚本列表。${PLAIN}"; exit 1; fi
+        if [[ -f "$LOCAL_LIST_FILE" ]]; then echo -e "${YELLOW}网络异常，使用本地缓存列表。${PLAIN}"; else echo -e "${RED}致命错误: 无法获取脚本列表。请检查网络或 IPv4 连接。${PLAIN}"; exit 1; fi
     else
         echo -e "${GREEN}同步完成。${PLAIN}"
     fi
@@ -388,7 +432,7 @@ show_main_menu() {
     while true; do
         clear
         echo -e "${GREEN}============================================${PLAIN}"
-        echo -e "${GREEN}      全能协议管理中心 (Commander v3.9.4)      ${PLAIN}"
+        echo -e "${GREEN}      全能协议管理中心 (Commander v3.9.5)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
         
         # 简单的状态检查 (Xray & Sing-box)
@@ -420,5 +464,7 @@ show_main_menu() {
 
 # 脚本启动流程
 check_dir_clean
+# [NEW] 在下载文件列表前先检查网络环境
+check_ipv6_environment
 init_urls
 show_main_menu
