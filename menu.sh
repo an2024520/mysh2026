@@ -1,10 +1,8 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.9.5)
-#  - 架构: Core / Nodes / Routing / Tools
-#  - 特性: 动态链接 / 环境自洁 / 模块化路由 / 双核节点管理 / 强刷缓存
-#  - 更新: 集成 IPv6-Only 环境自动检测与 NAT64 修正功能
+#  全能协议管理中心 (Commander v3.9.5 Fix)
+#  - 修复: IPv6-Only 环境下的 NAT64 检测逻辑误报问题
 # ============================================================
 
 # 颜色定义
@@ -16,68 +14,57 @@ PLAIN='\033[0m'
 GRAY='\033[0;37m'
 BLUE='\033[0;34m'
 
-# ==========================================
-# 1. 核心配置与文件映射
-# ==========================================
-
 URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
 
-# [文件映射: 本地文件名 <-> sh_url.txt 中的 Key]
-# --- Xray 核心类 ---
+# [文件映射区域 - 保持不变]
 FILE_XRAY_CORE="xray_core.sh"
 FILE_XRAY_UNINSTALL="xray_uninstall_all.sh"
-
-# --- Sing-box 核心类 ---
 FILE_SB_CORE="sb_install_core.sh"
 FILE_SB_UNINSTALL="sb_uninstall.sh"
-
-# --- 基础设施类 ---
 FILE_WIREPROXY="warp_wireproxy_socks5.sh"
 FILE_CF_TUNNEL="install_cf_tunnel_debian.sh"
-
-# --- Xray 节点类 ---
 FILE_ADD_XHTTP="xray_vless_xhttp_reality.sh"
 FILE_ADD_VISION="xray_vless_vision_reality.sh"
 FILE_ADD_WS="xray_vless_ws_tls.sh"
 FILE_ADD_TUNNEL="xray_vless_ws_tunnel.sh"
 FILE_NODE_INFO="xray_get_node_details.sh"
 FILE_NODE_DEL="xray_module_node_del.sh"
-
-# --- Sing-box 节点类 (新增) ---
-FILE_SB_ADD_ANYTLS="sb_anytls_reality.sh"         # 对应 XHTTP
-FILE_SB_ADD_VISION="sb_vless_vision_reality.sh" # 对应 Vision
-FILE_SB_ADD_WS="sb_vless_ws_tls.sh"             # 对应 WS-TLS
-FILE_SB_ADD_TUNNEL="sb_vless_ws_tunnel.sh"      # 对应 WS-Tunnel
-FILE_SB_ADD_HY2_SELF="sb_hy2_self.sh"           # 对应 Hy2 自签
-FILE_SB_ADD_HY2_ACME="sb_hy2_acme.sh"           # 对应 Hy2 ACME
-FILE_SB_INFO="sb_get_node_details.sh"           # 对应 查看信息
-FILE_SB_DEL="sb_module_node_del.sh"             # 对应 删除节点
-
-# --- 其他节点类 ---
+FILE_SB_ADD_ANYTLS="sb_anytls_reality.sh"
+FILE_SB_ADD_VISION="sb_vless_vision_reality.sh"
+FILE_SB_ADD_WS="sb_vless_ws_tls.sh"
+FILE_SB_ADD_TUNNEL="sb_vless_ws_tunnel.sh"
+FILE_SB_ADD_HY2_SELF="sb_hy2_self.sh"
+FILE_SB_ADD_HY2_ACME="sb_hy2_acme.sh"
+FILE_SB_INFO="sb_get_node_details.sh"
+FILE_SB_DEL="sb_module_node_del.sh"
 FILE_HY2="hy2.sh"
-
-# --- 路由与工具类 ---
 FILE_NATIVE_WARP="xray_module_warp_native_route.sh"
-FILE_SB_NATIVE_WARP="sb_module_warp_native_route.sh" # [新增] Sing-box Native WARP
-FILE_ATTACH="xray_module_attach_warp.sh"  # 旧挂载
-FILE_DETACH="xray_module_detach_warp.sh"  # 旧卸载
+FILE_SB_NATIVE_WARP="sb_module_warp_native_route.sh"
+FILE_ATTACH="xray_module_attach_warp.sh"
+FILE_DETACH="xray_module_detach_warp.sh"
 FILE_BOOST="xray_module_boost.sh"
 
 # --- 引擎函数 ---
 
-# [新增功能] 检测 IPv6-Only 环境并询问是否修复
+# [修正] 检测 IPv6-Only 环境并询问是否修复
 check_ipv6_environment() {
-    # 尝试连接 IPv4 DNS (1.1.1.1) 检测是否有 IPv4 能力
+    # 1. 预检：如果 curl -4 1.1.1.1 能通，说明是原生双栈，直接通过
     if curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null 2>&1; then
-        # 具备 IPv4 能力，直接跳过
+        return
+    fi
+
+    # 2. 如果原生不通，检查是否已经配置了有效的 NAT64 (通过访问纯IPv4站点 ipv4.google.com)
+    # 注意：这里不能加 -4，必须让 DNS64 发挥作用将域名解析为 IPv6
+    if curl -s --connect-timeout 3 https://ipv4.google.com >/dev/null 2>&1; then
+        # 已经能通了（可能是之前配置过，或者 DNS64 生效中），静默跳过
         return
     fi
 
     echo -e "${YELLOW}======================================================${PLAIN}"
     echo -e "${RED}⚠️  检测到当前环境为纯 IPv6 (IPv6-Only)！${PLAIN}"
-    echo -e "${GRAY}当前机器无法访问 IPv4 网络，这将导致无法下载 GitHub 资源或 Docker 镜像。${PLAIN}"
-    echo -e "${GRAY}本脚本集成了 NAT64/DNS64 (基于 Trex.fi) 自动配置功能。${PLAIN}"
+    echo -e "${GRAY}当前机器无法访问 IPv4 网络，这将导致无法下载 GitHub 资源。${PLAIN}"
+    echo -e "${GRAY}本脚本集成了 NAT64/DNS64 自动配置功能。${PLAIN}"
     echo -e ""
     read -p "是否立即配置 NAT64 以获得 IPv4 访问能力? (y/n, 默认 y): " fix_choice
     fix_choice=${fix_choice:-y}
@@ -85,27 +72,31 @@ check_ipv6_environment() {
     if [[ "$fix_choice" == "y" ]]; then
         echo -e "${YELLOW}正在配置 NAT64/DNS64...${PLAIN}"
         
-        # 1. 备份 DNS
+        # 备份 DNS
         if [ ! -f "/etc/resolv.conf.bak.nat64" ]; then
             cp /etc/resolv.conf /etc/resolv.conf.bak.nat64
             echo -e "${GREEN}已备份原 DNS 至 /etc/resolv.conf.bak.nat64${PLAIN}"
         fi
 
-        # 2. 注入 DNS64 地址 (Trex.fi)
-        # 2001:67c:2b0::4 和 2001:67c:2b0::6
-        echo -e "nameserver 2001:67c:2b0::4\nnameserver 2001:67c:2b0::6" > /etc/resolv.conf
+        # 注入 DNS64 地址 (优先使用 August Internet，备用 Trex)
+        # August: 2a09:c500::1 (通常更稳)
+        # Trex: 2001:67c:2b0::4
+        echo -e "nameserver 2a09:c500::1\nnameserver 2001:67c:2b0::4" > /etc/resolv.conf
 
-        # 3. 验证连接
-        sleep 1
-        if curl -4 -s --connect-timeout 5 https://www.google.com >/dev/null 2>&1; then
+        # 验证连接 (修正逻辑：不强制 -4，而是访问 IPv4 站点)
+        echo -e "${YELLOW}正在验证连通性...${PLAIN}"
+        sleep 2
+        if curl -s --connect-timeout 5 https://ipv4.google.com >/dev/null 2>&1; then
             echo -e "${GREEN}🎉 成功！已获得 IPv4 访问能力。${PLAIN}"
         else
-            echo -e "${RED}❌ 警告：NAT64 配置后仍无法连接 IPv4，请检查防火墙 UDP 53 端口。${PLAIN}"
+            echo -e "${RED}❌ 警告：NAT64 配置后仍无法连接。${PLAIN}"
+            echo -e "${GRAY}可能原因：防火墙拦截 UDP 53，或 systemd-resolved 干扰。${PLAIN}"
+            echo -e "建议尝试手动执行: echo 'nameserver 2a09:c500::1' > /etc/resolv.conf"
+            read -p "按回车尝试继续运行脚本..."
         fi
         echo -e ""
-        read -p "配置完成，按回车继续..."
     else
-        echo -e "${GRAY}已跳过 NAT64 配置。请注意：后续下载可能会失败。${PLAIN}"
+        echo -e "${GRAY}已跳过 NAT64 配置。${PLAIN}"
         echo -e ""
     fi
 }
@@ -129,10 +120,15 @@ check_dir_clean() {
 
 init_urls() {
     echo -e "${YELLOW}正在同步最新脚本列表...${PLAIN}"
-    # 【更新】加入时间戳 ?t=$(date +%s) 强制刷新 GitHub 缓存
     wget -T 5 -qO "$LOCAL_LIST_FILE" "${URL_LIST_FILE}?t=$(date +%s)"
     if [[ $? -ne 0 ]]; then
-        if [[ -f "$LOCAL_LIST_FILE" ]]; then echo -e "${YELLOW}网络异常，使用本地缓存列表。${PLAIN}"; else echo -e "${RED}致命错误: 无法获取脚本列表。请检查网络或 IPv4 连接。${PLAIN}"; exit 1; fi
+        if [[ -f "$LOCAL_LIST_FILE" ]]; then 
+            echo -e "${YELLOW}网络异常，使用本地缓存列表。${PLAIN}"
+        else 
+            echo -e "${RED}致命错误: 无法获取脚本列表。${PLAIN}"
+            echo -e "请检查你的 IPv4/NAT64 连接是否正常。"
+            exit 1
+        fi
     else
         echo -e "${GREEN}同步完成。${PLAIN}"
     fi
@@ -143,41 +139,33 @@ get_url_by_name() {
     grep "^$fname" "$LOCAL_LIST_FILE" | awk '{print $2}' | head -n 1
 }
 
-# 核心执行函数
 check_run() {
     local script_name="$1"
     local no_pause="$2"
 
-    # 1. 下载检查
     if [[ ! -f "$script_name" ]]; then
         echo -e "${YELLOW}正在获取组件 [$script_name] ...${PLAIN}"
         local script_url=$(get_url_by_name "$script_name")
         if [[ -z "$script_url" ]]; then echo -e "${RED}错误: sh_url.txt 中未找到该文件记录。${PLAIN}"; read -p "按回车继续..."; return; fi
         
-        # 确保目录结构存在
         mkdir -p "$(dirname "$script_name")"
-        
-        # 【更新】加入时间戳 ?t=$(date +%s) 强制刷新 GitHub 缓存
         wget -qO "$script_name" "${script_url}?t=$(date +%s)"
         if [[ $? -ne 0 ]]; then echo -e "${RED}下载失败。${PLAIN}"; read -p "按回车继续..."; return; fi
         chmod +x "$script_name"
         echo -e "${GREEN}获取成功。${PLAIN}"
     fi
 
-    # 2. 执行脚本
     ./"$script_name"
 
-    # 3. 智能暂停
     if [[ "$no_pause" != "true" ]]; then
         echo -e ""; read -p "操作结束，按回车键继续..."
     fi
 }
 
 # ==========================================
-# 2. 菜单逻辑
+# 2. 菜单逻辑 (保持不变)
 # ==========================================
 
-# --- [子菜单] Sing-box 核心环境 ---
 menu_singbox_env() {
     while true; do
         clear
@@ -199,7 +187,6 @@ menu_singbox_env() {
     done
 }
 
-# --- [子菜单] Xray 节点管理 ---
 menu_nodes_xray() {
     while true; do
         clear
@@ -229,7 +216,6 @@ menu_nodes_xray() {
     done
 }
 
-# --- [子菜单] Sing-box 节点管理 ---
 menu_nodes_sb() {
     while true; do
         clear
@@ -256,7 +242,6 @@ menu_nodes_sb() {
             5) check_run "$FILE_SB_ADD_HY2_SELF" ;;
             6) check_run "$FILE_SB_ADD_HY2_ACME" ;;
             7) 
-                # --- 查看节点 (逻辑已移交子脚本) ---
                 if [[ ! -f "$FILE_SB_INFO" ]]; then
                     echo -e "${YELLOW}正在获取组件 [$FILE_SB_INFO] ...${PLAIN}"
                     local script_url=$(get_url_by_name "$FILE_SB_INFO")
@@ -265,7 +250,6 @@ menu_nodes_sb() {
                         read -p "按回车继续..."; continue 
                     fi
                     mkdir -p "$(dirname "$FILE_SB_INFO")"
-                    # 带时间戳下载，防止缓存
                     wget -qO "$FILE_SB_INFO" "${script_url}?t=$(date +%s)" 
                     if [[ $? -ne 0 ]]; then 
                          echo -e "${RED}下载失败。${PLAIN}"; 
@@ -274,10 +258,7 @@ menu_nodes_sb() {
                     chmod +x "$FILE_SB_INFO"
                     echo -e "${GREEN}获取成功。${PLAIN}"
                 fi
-
-                # 直接运行子脚本，不带参数 -> 触发交互模式
                 ./"$FILE_SB_INFO"
-                
                 echo -e ""; read -p "操作结束，按回车键继续..."
                 ;;
             8) check_run "$FILE_SB_DEL" ;;
@@ -288,7 +269,6 @@ menu_nodes_sb() {
     done
 }
 
-# --- [新增] Sing-box 路由管理子菜单 ---
 menu_routing_sb() {
     while true; do
         clear
@@ -302,14 +282,8 @@ menu_routing_sb() {
         echo -e ""
         read -p "请选择: " choice_sb_route
         case $choice_sb_route in
-            1) 
-                # 调用 Native WARP 管理脚本
-                check_run "$FILE_SB_NATIVE_WARP" "true" 
-                ;;
-            2)
-                echo -e "${RED}功能开发中...${PLAIN}"
-                sleep 2
-                ;;
+            1) check_run "$FILE_SB_NATIVE_WARP" "true" ;;
+            2) echo -e "${RED}功能开发中...${PLAIN}"; sleep 2 ;;
             0) return ;;
             99) show_main_menu ;;
             *) echo -e "${RED}无效选择${PLAIN}"; sleep 1 ;;
@@ -317,7 +291,6 @@ menu_routing_sb() {
     done
 }
 
-# --- 1. 前置/核心管理 ---
 menu_core() {
     while true; do
         clear
@@ -328,9 +301,7 @@ menu_core() {
         echo -e " ${SKYBLUE}3.${PLAIN} Sing-box 核心环境管理"
         echo -e " ----------------------------------------------"
         echo -e " ${SKYBLUE}4.${PLAIN} WireProxy (Warp 出口代理服务)"
-        echo -e "    ${GRAY}- 仅提供本地 Socks5 端口，需配合路由规则使用${PLAIN}"
         echo -e " ${SKYBLUE}5.${PLAIN} Cloudflare Tunnel (内网穿透)"
-        echo -e "    ${GRAY}- 将本地节点映射到公网，自带 CDN${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
@@ -349,7 +320,6 @@ menu_core() {
     done
 }
 
-# --- 2. 节点配置管理 (入口) ---
 menu_nodes() {
     while true; do
         clear
@@ -374,7 +344,6 @@ menu_nodes() {
     done
 }
 
-# --- 3. 路由规则管理 ---
 menu_routing() {
     while true; do
         clear
@@ -384,7 +353,6 @@ menu_routing() {
         echo -e "    ${GRAY}- 内核直连，支持 全局/分流/指定节点接管${PLAIN}"
         echo -e ""
         echo -e " ${YELLOW}2. Wireproxy WARP (传统挂载模式)${PLAIN}"
-        echo -e "    ${GRAY}- 需先在核心管理中安装 WireProxy 服务${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " [Sing-box 核心路由]"
         echo -e " ${GREEN}3. Sing-box 路由管理 (WARP & 分流)${PLAIN}"
@@ -413,20 +381,13 @@ menu_routing() {
                     esac
                 done
                 ;;
-            3)
-                # 调用新的 Sing-box 路由管理
-                menu_routing_sb
-                ;;
+            3) menu_routing_sb ;;
             0) break ;;
             99) show_main_menu ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
 }
-
-# ==========================================
-# 3. 主程序入口 (封装为函数，方便递归调用)
-# ==========================================
 
 show_main_menu() {
     while true; do
@@ -435,7 +396,6 @@ show_main_menu() {
         echo -e "${GREEN}      全能协议管理中心 (Commander v3.9.5)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
         
-        # 简单的状态检查 (Xray & Sing-box)
         STATUS_TEXT=""
         if pgrep -x "xray" >/dev/null; then STATUS_TEXT+="Xray:${GREEN}运行 ${PLAIN}"; else STATUS_TEXT+="Xray:${RED}停止 ${PLAIN}"; fi
         if pgrep -x "sing-box" >/dev/null; then STATUS_TEXT+="| SB:${GREEN}运行 ${PLAIN}"; else STATUS_TEXT+="| SB:${RED}停止 ${PLAIN}"; fi
@@ -464,7 +424,6 @@ show_main_menu() {
 
 # 脚本启动流程
 check_dir_clean
-# [NEW] 在下载文件列表前先检查网络环境
 check_ipv6_environment
 init_urls
 show_main_menu
