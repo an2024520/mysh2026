@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.9.3)
+#  全能协议管理中心 (Commander v3.9.4)
 #  - 架构: Core / Nodes / Routing / Tools
 #  - 特性: 动态链接 / 环境自洁 / 模块化路由 / 双核节点管理 / 强刷缓存
-#  - 更新: 集成 Sing-box Hysteria 2 双版本
+#  - 更新: 增加【返回主菜单】一键跳转功能
 # ============================================================
 
 # 颜色定义
@@ -142,12 +142,14 @@ menu_singbox_env() {
         echo -e " ${SKYBLUE}2.${PLAIN} ${RED}彻底卸载 Sing-box 服务${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
         echo -e ""
         read -p "请选择: " sb_choice
         case "$sb_choice" in
             1) check_run "$FILE_SB_CORE" ;;
             2) check_run "$FILE_SB_UNINSTALL" ;;
             0) return ;;
+            99) show_main_menu ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -166,6 +168,7 @@ menu_nodes_xray() {
         echo -e " ${SKYBLUE}6.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
         echo -e ""
         read -p "请选择: " choice
         case "$choice" in
@@ -176,6 +179,7 @@ menu_nodes_xray() {
             5) check_run "$FILE_NODE_INFO" ;;
             6) check_run "$FILE_NODE_DEL" ;;
             0) return ;;
+            99) show_main_menu ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -197,6 +201,7 @@ menu_nodes_sb() {
         echo -e " ${SKYBLUE}8.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
         echo -e ""
         read -p "请选择: " choice
         case "$choice" in
@@ -233,6 +238,7 @@ menu_nodes_sb() {
                 ;;
             8) check_run "$FILE_SB_DEL" ;;
             0) return ;;
+            99) show_main_menu ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -248,6 +254,7 @@ menu_routing_sb() {
         echo -e " ${GREEN}2.${PLAIN} Wireproxy WARP (Socks5 模式 - 待开发)"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
         echo -e ""
         read -p "请选择: " choice_sb_route
         case $choice_sb_route in
@@ -260,6 +267,7 @@ menu_routing_sb() {
                 sleep 2
                 ;;
             0) return ;;
+            99) show_main_menu ;;
             *) echo -e "${RED}无效选择${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -281,6 +289,7 @@ menu_core() {
         echo -e "    ${GRAY}- 将本地节点映射到公网，自带 CDN${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
         echo -e ""
         read -p "请选择: " choice
         case "$choice" in
@@ -290,6 +299,7 @@ menu_core() {
             4) check_run "$FILE_WIREPROXY" ;;
             5) check_run "$FILE_CF_TUNNEL" ;;
             0) break ;;
+            99) show_main_menu ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -306,6 +316,7 @@ menu_nodes() {
         echo -e " ${SKYBLUE}3.${PLAIN} 独立 Hysteria 2 节点管理"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
         echo -e ""
         read -p "请选择: " choice
         case "$choice" in
@@ -313,6 +324,7 @@ menu_nodes() {
             2) menu_nodes_sb ;;
             3) check_run "$FILE_HY2" ;;
             0) break ;;
+            99) show_main_menu ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -334,6 +346,7 @@ menu_routing() {
         echo -e " ${GREEN}3. Sing-box 路由管理 (WARP & 分流)${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
         echo -e ""
         read -p "请选择: " choice
         case "$choice" in
@@ -345,12 +358,14 @@ menu_routing() {
                     echo -e " 1. 挂载 WARP/Socks5 (解锁流媒体)"
                     echo -e " 2. 解除 挂载 (恢复直连)"
                     echo -e " 0. 返回"
+                    echo -e " 99. 返回总菜单"
                     echo -e ""
                     read -p "请选择: " sub_c
                     case "$sub_c" in
                         1) check_run "$FILE_ATTACH" ;;
                         2) check_run "$FILE_DETACH" ;;
                         0) break ;;
+                        99) show_main_menu ;;
                     esac
                 done
                 ;;
@@ -359,46 +374,51 @@ menu_routing() {
                 menu_routing_sb
                 ;;
             0) break ;;
+            99) show_main_menu ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
 }
 
 # ==========================================
-# 3. 主程序入口
+# 3. 主程序入口 (封装为函数，方便递归调用)
 # ==========================================
 
+show_main_menu() {
+    while true; do
+        clear
+        echo -e "${GREEN}============================================${PLAIN}"
+        echo -e "${GREEN}      全能协议管理中心 (Commander v3.9.4)      ${PLAIN}"
+        echo -e "${GREEN}============================================${PLAIN}"
+        
+        # 简单的状态检查 (Xray & Sing-box)
+        STATUS_TEXT=""
+        if pgrep -x "xray" >/dev/null; then STATUS_TEXT+="Xray:${GREEN}运行 ${PLAIN}"; else STATUS_TEXT+="Xray:${RED}停止 ${PLAIN}"; fi
+        if pgrep -x "sing-box" >/dev/null; then STATUS_TEXT+="| SB:${GREEN}运行 ${PLAIN}"; else STATUS_TEXT+="| SB:${RED}停止 ${PLAIN}"; fi
+        
+        echo -e " 系统状态: [$STATUS_TEXT]"
+        echo -e "--------------------------------------------"
+        echo -e " ${SKYBLUE}1.${PLAIN} 前置/核心管理 (Core & Infrastructure)"
+        echo -e " ${SKYBLUE}2.${PLAIN} 节点配置管理 (Nodes)"
+        echo -e " ${SKYBLUE}3.${PLAIN} 路由规则管理 (Routing & WARP) ${YELLOW}★${PLAIN}"
+        echo -e " ${SKYBLUE}4.${PLAIN} 系统优化工具 (BBR/Cert/Logs)"
+        echo -e "--------------------------------------------"
+        echo -e " ${GRAY}0. 退出脚本${PLAIN}"
+        echo -e ""
+        read -p "请选择操作 [0-4]: " main_choice
+
+        case "$main_choice" in
+            1) menu_core ;;
+            2) menu_nodes ;;
+            3) menu_routing ;;
+            4) check_run "$FILE_BOOST" ;;
+            0) exit 0 ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
+
+# 脚本启动流程
 check_dir_clean
 init_urls
-
-while true; do
-    clear
-    echo -e "${GREEN}============================================${PLAIN}"
-    echo -e "${GREEN}      全能协议管理中心 (Commander v3.9.3)      ${PLAIN}"
-    echo -e "${GREEN}============================================${PLAIN}"
-    
-    # 简单的状态检查 (Xray & Sing-box)
-    STATUS_TEXT=""
-    if pgrep -x "xray" >/dev/null; then STATUS_TEXT+="Xray:${GREEN}运行 ${PLAIN}"; else STATUS_TEXT+="Xray:${RED}停止 ${PLAIN}"; fi
-    if pgrep -x "sing-box" >/dev/null; then STATUS_TEXT+="| SB:${GREEN}运行 ${PLAIN}"; else STATUS_TEXT+="| SB:${RED}停止 ${PLAIN}"; fi
-    
-    echo -e " 系统状态: [$STATUS_TEXT]"
-    echo -e "--------------------------------------------"
-    echo -e " ${SKYBLUE}1.${PLAIN} 前置/核心管理 (Core & Infrastructure)"
-    echo -e " ${SKYBLUE}2.${PLAIN} 节点配置管理 (Nodes)"
-    echo -e " ${SKYBLUE}3.${PLAIN} 路由规则管理 (Routing & WARP) ${YELLOW}★${PLAIN}"
-    echo -e " ${SKYBLUE}4.${PLAIN} 系统优化工具 (BBR/Cert/Logs)"
-    echo -e "--------------------------------------------"
-    echo -e " ${GRAY}0. 退出脚本${PLAIN}"
-    echo -e ""
-    read -p "请选择操作 [0-4]: " main_choice
-
-    case "$main_choice" in
-        1) menu_core ;;
-        2) menu_nodes ;;
-        3) menu_routing ;;
-        4) check_run "$FILE_BOOST" ;;
-        0) exit 0 ;;
-        *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
-    esac
-done
+show_main_menu
