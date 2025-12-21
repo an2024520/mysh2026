@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.9.2)
+#  全能协议管理中心 (Commander v3.9.3)
 #  - 架构: Core / Nodes / Routing / Tools
 #  - 特性: 动态链接 / 环境自洁 / 模块化路由 / 双核节点管理 / 强刷缓存
+#  - 更新: 集成 Sing-box Hysteria 2 双版本
 # ============================================================
 
 # 颜色定义
@@ -48,6 +49,8 @@ FILE_SB_ADD_ANYTLS="sb_anytls_reality.sh"         # 对应 XHTTP
 FILE_SB_ADD_VISION="sb_vless_vision_reality.sh" # 对应 Vision
 FILE_SB_ADD_WS="sb_vless_ws_tls.sh"             # 对应 WS-TLS
 FILE_SB_ADD_TUNNEL="sb_vless_ws_tunnel.sh"      # 对应 WS-Tunnel
+FILE_SB_ADD_HY2_SELF="sb_hy2_self.sh"           # 对应 Hy2 自签
+FILE_SB_ADD_HY2_ACME="sb_hy2_acme.sh"           # 对应 Hy2 ACME
 FILE_SB_INFO="sb_get_node_details.sh"           # 对应 查看信息
 FILE_SB_DEL="sb_module_node_del.sh"             # 对应 删除节点
 
@@ -186,8 +189,11 @@ menu_nodes_sb() {
         echo -e " ${SKYBLUE}2.${PLAIN} 新增: VLESS-Vision-Reality (极稳定 - 推荐)"
         echo -e " ${SKYBLUE}3.${PLAIN} 新增: VLESS-WS-TLS (CDN / Nginx前置)"
         echo -e " ${SKYBLUE}4.${PLAIN} 新增: VLESS-WS-Tunnel (Tunnel穿透专用)"
-        echo -e " ${SKYBLUE}5.${PLAIN} 查看: 当前节点链接 / 分享信息"
-        echo -e " ${SKYBLUE}6.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
+        echo -e " ${SKYBLUE}5.${PLAIN} 新增: Hysteria2 (自签证书 - 极速/跳过验证)"
+        echo -e " ${SKYBLUE}6.${PLAIN} 新增: Hysteria2 (ACME证书 - 推荐/标准HTTPS)"
+        echo -e " ----------------------------------------------"
+        echo -e " ${SKYBLUE}7.${PLAIN} 查看: 当前节点链接 / 分享信息"
+        echo -e " ${SKYBLUE}8.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo -e ""
@@ -197,7 +203,9 @@ menu_nodes_sb() {
             2) check_run "$FILE_SB_ADD_VISION" ;;
             3) check_run "$FILE_SB_ADD_WS" ;;
             4) check_run "$FILE_SB_ADD_TUNNEL" ;;
-            5) 
+            5) check_run "$FILE_SB_ADD_HY2_SELF" ;;
+            6) check_run "$FILE_SB_ADD_HY2_ACME" ;;
+            7) 
                 # --- 查看节点 (逻辑已移交子脚本) ---
                 if [[ ! -f "$FILE_SB_INFO" ]]; then
                     echo -e "${YELLOW}正在获取组件 [$FILE_SB_INFO] ...${PLAIN}"
@@ -222,7 +230,7 @@ menu_nodes_sb() {
                 
                 echo -e ""; read -p "操作结束，按回车键继续..."
                 ;;
-            6) check_run "$FILE_SB_DEL" ;;
+            8) check_run "$FILE_SB_DEL" ;;
             0) return ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
@@ -342,7 +350,7 @@ init_urls
 while true; do
     clear
     echo -e "${GREEN}============================================${PLAIN}"
-    echo -e "${GREEN}      全能协议管理中心 (Commander v3.9.2)      ${PLAIN}"
+    echo -e "${GREEN}      全能协议管理中心 (Commander v3.9.3)      ${PLAIN}"
     echo -e "${GREEN}============================================${PLAIN}"
     
     # 简单的状态检查 (Xray & Sing-box)
