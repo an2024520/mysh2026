@@ -135,7 +135,7 @@ fi
 # 5. 生成密钥
 echo -e "${YELLOW}正在生成密钥...${PLAIN}"
 
-USER_PASS=$(openssl rand -base64 16)
+USER_PASS=$($SB_BIN generate uuid)
 # 尝试使用 sing-box 生成密钥
 KEY_PAIR=$($SB_BIN generate reality-keypair 2>/dev/null)
 
