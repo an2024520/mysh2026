@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # =================================================
-# 脚本名称：sb_get_node_details.sh (v3.0 Final)
-# 作用：全能节点信息提取 (支持 AnyTLS / 元数据读取 / 智能配置生成)
+# 脚本名称：sb_get_node_details.sh (v3.1 Final)
+# 作用：全能节点信息提取 (支持 AnyTLS / Hysteria2 / 元数据读取)
 # =================================================
 
 RED='\033[0;31m'
@@ -33,7 +33,7 @@ if ! command -v jq &> /dev/null; then echo -e "${RED}错误: 需要安装 jq${PL
 # 2. 交互式选择 (Inbounds + Outbounds)
 # ------------------------------------------------
 if [[ -z "$NODE_TAG" ]]; then
-    # 扫描 Inbounds (排除空) - 增加 anytls 支持
+    # 扫描 Inbounds (排除空) - 增加 anytls/hysteria2 支持
     LIST_IN=$(jq -r '.inbounds[]? | select(.type=="vless" or .type=="vmess" or .type=="hysteria2" or .type=="anytls") | .tag + " [Server-In]"' "$CONFIG_FILE")
     # 扫描 Outbounds (排除 Direct/Block 等)
     LIST_OUT=$(jq -r '.outbounds[]? | select(.type!="direct" and .type!="block" and .type!="dns" and .type!="selector" and .type!="urltest") | .tag + " [Client-Out]"' "$CONFIG_FILE")
@@ -91,41 +91,63 @@ if [[ -z "$NODE_JSON" ]]; then echo "错误: JSON 中找不到 Tag 为 '$NODE_TA
 
 # 提取通用字段
 TYPE=$(echo "$NODE_JSON" | jq -r '.type')
+SKIP_CERT_VERIFY="false" # 默认验证证书
 
 if [[ "$IS_SERVER" == "true" ]]; then
     # === 服务端模式 (Inbound) ===
-    # IP: 获取本机公网IP
     SERVER_ADDR=$(curl -s4m5 https://api.ip.sb/ip || curl -s4m5 ifconfig.me)
     PORT=$(echo "$NODE_JSON" | jq -r '.listen_port')
     
     # 区分协议提取凭证
-    if [[ "$TYPE" == "anytls" ]]; then
+    if [[ "$TYPE" == "anytls" || "$TYPE" == "hysteria2" ]]; then
         PASSWORD=$(echo "$NODE_JSON" | jq -r '.users[0].password // empty')
     else
         UUID=$(echo "$NODE_JSON" | jq -r '.users[0].uuid // empty')
-        PASSWORD=$(echo "$NODE_JSON" | jq -r '.users[0].password // empty')
     fi
     
-    # 尝试从伴生文件读取元数据 (关键: 读取 Reality 公钥)
+    # 提取 Hy2 混淆
+    if [[ "$TYPE" == "hysteria2" ]]; then
+        OBFS_TYPE="salamander"
+        OBFS_PASS=$(echo "$NODE_JSON" | jq -r '.obfs.password // empty')
+    fi
+
+    # 尝试从伴生文件读取元数据
     if [[ -f "$META_FILE" ]]; then
+        # VLESS / AnyTLS
         PBK=$(jq -r --arg tag "$NODE_TAG" '.[$tag].pbk // empty' "$META_FILE")
         SID=$(jq -r --arg tag "$NODE_TAG" '.[$tag].sid // empty' "$META_FILE")
-        SNI=$(jq -r --arg tag "$NODE_TAG" '.[$tag].sni // empty' "$META_FILE")
+        
+        # 通用 / Hy2
+        META_SNI=$(jq -r --arg tag "$NODE_TAG" '.[$tag].sni // .[$tag].domain // empty' "$META_FILE")
+        if [[ -n "$META_SNI" ]]; then SNI="$META_SNI"; fi
+        
+        # Hy2 证书模式判断
+        META_TYPE=$(jq -r --arg tag "$NODE_TAG" '.[$tag].type // empty' "$META_FILE")
+        if [[ "$META_TYPE" == "hy2-self" ]]; then
+            SKIP_CERT_VERIFY="true"
+        fi
     fi
     
-    # 如果伴生文件里没有，尝试从配置读取
+    # 如果伴生文件里没有 SNI，尝试从配置读取
     if [[ -z "$SNI" ]]; then SNI=$(echo "$NODE_JSON" | jq -r '.tls.server_name // empty'); fi
+    # 如果 Hy2 自签且无 SNI，默认 bing.com
+    if [[ "$TYPE" == "hysteria2" && "$SKIP_CERT_VERIFY" == "true" && -z "$SNI" ]]; then SNI="bing.com"; fi
 
 else
     # === 客户端模式 (Outbound) ===
     SERVER_ADDR=$(echo "$NODE_JSON" | jq -r '.server')
     PORT=$(echo "$NODE_JSON" | jq -r '.server_port')
     
-    if [[ "$TYPE" == "anytls" ]]; then
+    if [[ "$TYPE" == "anytls" || "$TYPE" == "hysteria2" ]]; then
         PASSWORD=$(echo "$NODE_JSON" | jq -r '.password // empty')
     else
         UUID=$(echo "$NODE_JSON" | jq -r '.uuid // empty')
-        PASSWORD=$(echo "$NODE_JSON" | jq -r '.password // empty')
+    fi
+    
+    if [[ "$TYPE" == "hysteria2" ]]; then
+        OBFS_PASS=$(echo "$NODE_JSON" | jq -r '.obfs.password // empty')
+        INSECURE=$(echo "$NODE_JSON" | jq -r '.tls.insecure // "false"')
+        [[ "$INSECURE" == "true" ]] && SKIP_CERT_VERIFY="true"
     fi
     
     SNI=$(echo "$NODE_JSON" | jq -r '.tls.server_name // empty')
@@ -145,7 +167,6 @@ urlencode() {
 # 4. 生成链接与配置
 # ------------------------------------------------
 LINK=""
-SHOW_CLASH="true" # 默认显示 Clash，AnyTLS 除外
 
 case "$TYPE" in
     "vless")
@@ -154,7 +175,6 @@ case "$TYPE" in
             FLOW=$(echo "$NODE_JSON" | jq -r '.users[0].flow // empty')
             TLS_ENABLED=$(echo "$NODE_JSON" | jq -r '.tls.enabled // "false"')
             REALITY=$(echo "$NODE_JSON" | jq -r '.tls.reality.enabled // "false"')
-            # 传输层
             TRANSPORT=$(echo "$NODE_JSON" | jq -r '.transport.type // "tcp"')
             WS_PATH=$(echo "$NODE_JSON" | jq -r '.transport.path // "/"')
             GRPC_SERVICE=$(echo "$NODE_JSON" | jq -r '.transport.service_name // empty')
@@ -182,35 +202,23 @@ case "$TYPE" in
         [[ -n "$FLOW" ]] && PARAMS+="&flow=$FLOW"
         
         LINK="vless://${UUID}@${SERVER_ADDR}:${PORT}?${PARAMS}#$(urlencode "$NODE_TAG")"
-        
-        # --- 配置块准备 ---
-        # 简化变量用于 OpenClash 输出
-        OC_TLS="true"
-        OC_FLOW="$FLOW"
-        OC_NET="$TRANSPORT"
-        OC_OPTS=""
-        if [[ "$REALITY" == "true" ]]; then
-            OC_OPTS="  reality-opts:
-    public-key: $PBK
-    short-id: $SID"
-        fi
-        if [[ "$TRANSPORT" == "ws" ]]; then
-             OC_OPTS="$OC_OPTS
-  ws-opts:
-    path: \"$WS_PATH\"
-    headers:
-      Host: $SNI"
-        fi
         ;;
 
     "anytls")
-        SHOW_CLASH="false" # Clash 不支持 AnyTLS
         LINK="anytls://${PASSWORD}@${SERVER_ADDR}:${PORT}?security=reality&sni=${SNI}&fp=chrome&pbk=${PBK}&sid=${SID}&type=tcp&headerType=none#$(urlencode "$NODE_TAG")"
         ;;
 
-    "vmess")
-        # 简单 VMess 支持 (略)
-        LINK="vmess://(Base64_Hidden_For_Brevity)"
+    "hysteria2")
+        # 构造 Hy2 链接
+        # hysteria2://password@ip:port?insecure=1&obfs=salamander&obfs-password=xxx&sni=bing.com#tag
+        INSECURE_VAL="0"
+        [[ "$SKIP_CERT_VERIFY" == "true" ]] && INSECURE_VAL="1"
+        
+        LINK="hysteria2://${PASSWORD}@${SERVER_ADDR}:${PORT}?insecure=${INSECURE_VAL}&sni=${SNI}"
+        if [[ -n "$OBFS_PASS" ]]; then
+            LINK+="&obfs=salamander&obfs-password=${OBFS_PASS}"
+        fi
+        LINK+="#$(urlencode "$NODE_TAG")"
         ;;
 
     *)
@@ -227,14 +235,22 @@ echo -e "${GREEN}       节点详情: ${NODE_TAG}       ${PLAIN}"
 echo -e "${GREEN}========================================${PLAIN}"
 echo -e "协议        : ${YELLOW}${TYPE}${PLAIN}"
 echo -e "地址        : ${YELLOW}${SERVER_ADDR}:${PORT}${PLAIN}"
-if [[ "$TYPE" == "anytls" ]]; then
+
+if [[ "$TYPE" == "anytls" || "$TYPE" == "hysteria2" ]]; then
     echo -e "Password    : ${SKYBLUE}${PASSWORD}${PLAIN}"
 else
     echo -e "UUID        : ${SKYBLUE}${UUID}${PLAIN}"
 fi
+
 echo -e "SNI         : ${YELLOW}${SNI}${PLAIN}"
-if [[ -n "$PBK" ]]; then
+
+if [[ "$TYPE" == "vless" && -n "$PBK" ]]; then
     echo -e "Reality PBK : ${SKYBLUE}${PBK}${PLAIN}"
+elif [[ "$TYPE" == "anytls" && -n "$PBK" ]]; then
+    echo -e "Reality PBK : ${SKYBLUE}${PBK}${PLAIN}"
+elif [[ "$TYPE" == "hysteria2" ]]; then
+    echo -e "Obfs Pass   : ${SKYBLUE}${OBFS_PASS}${PLAIN}"
+    echo -e "Skip Cert   : $( [[ "$SKIP_CERT_VERIFY" == "true" ]] && echo "${RED}True (不安全)${PLAIN}" || echo "${GREEN}False (安全)${PLAIN}" )"
 fi
 
 echo -e "----------------------------------------"
@@ -281,16 +297,55 @@ cat <<EOF
   "transport": { "type": "${TRANSPORT}", "path": "${WS_PATH}" }
 }
 EOF
+elif [[ "$TYPE" == "hysteria2" ]]; then
+INSECURE_BOOL="false"
+[[ "$SKIP_CERT_VERIFY" == "true" ]] && INSECURE_BOOL="true"
+cat <<EOF
+{
+  "type": "hysteria2",
+  "tag": "proxy-out",
+  "server": "${SERVER_ADDR}",
+  "server_port": ${PORT},
+  "password": "${PASSWORD}",
+  "tls": {
+    "enabled": true,
+    "server_name": "${SNI}",
+    "insecure": ${INSECURE_BOOL}
+  },
+  "obfs": {
+    "type": "salamander",
+    "password": "${OBFS_PASS}"
+  }
+}
+EOF
 fi
 echo -e "${PLAIN}----------------------------------------"
 
-# --- OpenClash 配置 (条件输出) ---
-if [[ "$SHOW_CLASH" == "true" ]]; then
+# --- OpenClash 配置 (分流处理) ---
+if [[ "$TYPE" == "vless" ]]; then
+    # VLESS 的 OpenClash 配置
+    OC_TLS="true"
+    OC_FLOW="$FLOW"
+    OC_NET="$TRANSPORT"
+    OC_OPTS=""
+    if [[ "$REALITY" == "true" ]]; then
+        OC_OPTS="  reality-opts:
+    public-key: $PBK
+    short-id: $SID"
+    fi
+    if [[ "$TRANSPORT" == "ws" ]]; then
+         OC_OPTS="$OC_OPTS
+  ws-opts:
+    path: \"$WS_PATH\"
+    headers:
+      Host: $SNI"
+    fi
+    
     echo -e "🐱 [Clash Meta / OpenClash 配置块]:"
     echo -e "${YELLOW}"
 cat <<EOF
 - name: "${NODE_TAG}"
-  type: ${TYPE}
+  type: vless
   server: ${SERVER_ADDR}
   port: ${PORT}
   uuid: ${UUID}
@@ -303,13 +358,32 @@ cat <<EOF
 ${OC_OPTS}
 EOF
     echo -e "${PLAIN}----------------------------------------"
-else
-    echo -e "${YELLOW}⚠️  OpenClash / Clash Meta 不支持 ${TYPE} 协议，跳过生成配置。${PLAIN}"
+
+elif [[ "$TYPE" == "hysteria2" ]]; then
+    # Hysteria2 的 OpenClash 配置
+    echo -e "🐱 [Clash Meta / OpenClash 配置块]:"
+    echo -e "${YELLOW}"
+cat <<EOF
+- name: "${NODE_TAG}"
+  type: hysteria2
+  server: ${SERVER_ADDR}
+  port: ${PORT}
+  password: "${PASSWORD}"
+  sni: "${SNI}"
+  skip-cert-verify: ${SKIP_CERT_VERIFY}
+  obfs: salamander
+  obfs-password: "${OBFS_PASS}"
+EOF
+    echo -e "${PLAIN}----------------------------------------"
+
+elif [[ "$TYPE" == "anytls" ]]; then
+    # AnyTLS 不支持 Clash
+    echo -e "${YELLOW}⚠️  OpenClash / Clash Meta 不支持 AnyTLS 协议，跳过生成配置。${PLAIN}"
     echo -e "----------------------------------------"
 fi
 
 # 警告信息
-if [[ "$IS_SERVER" == "true" && -n "$REALITY" && -z "$PBK" ]]; then
+if [[ "$IS_SERVER" == "true" && -n "$REALITY" && -z "$PBK" && "$TYPE" == "vless" ]]; then
     echo -e "${RED}严重警告: 未找到 Reality Public Key。${PLAIN}"
     echo -e "原因: 这是一个旧版脚本创建的节点，没有保存公钥元数据。"
     echo -e "建议: 删除此节点并重新添加。"
