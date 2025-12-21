@@ -1,9 +1,8 @@
 #!/bin/bash
 
 # =================================================
-# 脚本名称：sb_get_node_details.sh (v2.2 混合读取版)
-# 作用：支持 Inbounds(Server)/Outbounds(Client) 读取
-#       支持从 .meta 伴生文件自动提取 Reality 公钥
+# 脚本名称：sb_get_node_details.sh (v3.0 Final)
+# 作用：全能节点信息提取 (支持 AnyTLS / 元数据读取 / 智能配置生成)
 # =================================================
 
 RED='\033[0;31m'
@@ -34,8 +33,8 @@ if ! command -v jq &> /dev/null; then echo -e "${RED}错误: 需要安装 jq${PL
 # 2. 交互式选择 (Inbounds + Outbounds)
 # ------------------------------------------------
 if [[ -z "$NODE_TAG" ]]; then
-    # 扫描 Inbounds (排除空)
-    LIST_IN=$(jq -r '.inbounds[]? | select(.type=="vless" or .type=="vmess" or .type=="hysteria2") | .tag + " [Server-In]"' "$CONFIG_FILE")
+    # 扫描 Inbounds (排除空) - 增加 anytls 支持
+    LIST_IN=$(jq -r '.inbounds[]? | select(.type=="vless" or .type=="vmess" or .type=="hysteria2" or .type=="anytls") | .tag + " [Server-In]"' "$CONFIG_FILE")
     # 扫描 Outbounds (排除 Direct/Block 等)
     LIST_OUT=$(jq -r '.outbounds[]? | select(.type!="direct" and .type!="block" and .type!="dns" and .type!="selector" and .type!="urltest") | .tag + " [Client-Out]"' "$CONFIG_FILE")
     
@@ -94,27 +93,41 @@ if [[ -z "$NODE_JSON" ]]; then echo "错误: JSON 中找不到 Tag 为 '$NODE_TA
 TYPE=$(echo "$NODE_JSON" | jq -r '.type')
 
 if [[ "$IS_SERVER" == "true" ]]; then
-    # === 服务端模式 ===
+    # === 服务端模式 (Inbound) ===
     # IP: 获取本机公网IP
     SERVER_ADDR=$(curl -s4m5 https://api.ip.sb/ip || curl -s4m5 ifconfig.me)
     PORT=$(echo "$NODE_JSON" | jq -r '.listen_port')
-    UUID=$(echo "$NODE_JSON" | jq -r '.users[0].uuid // empty')
     
-    # 尝试从伴生文件读取元数据
+    # 区分协议提取凭证
+    if [[ "$TYPE" == "anytls" ]]; then
+        PASSWORD=$(echo "$NODE_JSON" | jq -r '.users[0].password // empty')
+    else
+        UUID=$(echo "$NODE_JSON" | jq -r '.users[0].uuid // empty')
+        PASSWORD=$(echo "$NODE_JSON" | jq -r '.users[0].password // empty')
+    fi
+    
+    # 尝试从伴生文件读取元数据 (关键: 读取 Reality 公钥)
     if [[ -f "$META_FILE" ]]; then
         PBK=$(jq -r --arg tag "$NODE_TAG" '.[$tag].pbk // empty' "$META_FILE")
         SID=$(jq -r --arg tag "$NODE_TAG" '.[$tag].sid // empty' "$META_FILE")
         SNI=$(jq -r --arg tag "$NODE_TAG" '.[$tag].sni // empty' "$META_FILE")
     fi
     
-    # 如果伴生文件里没有(旧节点)，尝试从配置读取(虽然通常没有)
+    # 如果伴生文件里没有，尝试从配置读取
     if [[ -z "$SNI" ]]; then SNI=$(echo "$NODE_JSON" | jq -r '.tls.server_name // empty'); fi
-    # PBK 在 inbound通常读不到，如果为空，稍后会提示
+
 else
-    # === 客户端模式 ===
+    # === 客户端模式 (Outbound) ===
     SERVER_ADDR=$(echo "$NODE_JSON" | jq -r '.server')
     PORT=$(echo "$NODE_JSON" | jq -r '.server_port')
-    UUID=$(echo "$NODE_JSON" | jq -r '.uuid // empty')
+    
+    if [[ "$TYPE" == "anytls" ]]; then
+        PASSWORD=$(echo "$NODE_JSON" | jq -r '.password // empty')
+    else
+        UUID=$(echo "$NODE_JSON" | jq -r '.uuid // empty')
+        PASSWORD=$(echo "$NODE_JSON" | jq -r '.password // empty')
+    fi
+    
     SNI=$(echo "$NODE_JSON" | jq -r '.tls.server_name // empty')
     PBK=$(echo "$NODE_JSON" | jq -r '.tls.reality.public_key // empty')
     SID=$(echo "$NODE_JSON" | jq -r '.tls.reality.short_id // empty')
@@ -129,9 +142,11 @@ urlencode() {
     echo "${encoded}"
 }
 
-# 4. 生成链接
+# 4. 生成链接与配置
 # ------------------------------------------------
 LINK=""
+SHOW_CLASH="true" # 默认显示 Clash，AnyTLS 除外
+
 case "$TYPE" in
     "vless")
         FLOW=""
@@ -139,10 +154,17 @@ case "$TYPE" in
             FLOW=$(echo "$NODE_JSON" | jq -r '.users[0].flow // empty')
             TLS_ENABLED=$(echo "$NODE_JSON" | jq -r '.tls.enabled // "false"')
             REALITY=$(echo "$NODE_JSON" | jq -r '.tls.reality.enabled // "false"')
+            # 传输层
+            TRANSPORT=$(echo "$NODE_JSON" | jq -r '.transport.type // "tcp"')
+            WS_PATH=$(echo "$NODE_JSON" | jq -r '.transport.path // "/"')
+            GRPC_SERVICE=$(echo "$NODE_JSON" | jq -r '.transport.service_name // empty')
         else
             FLOW=$(echo "$NODE_JSON" | jq -r '.flow // empty')
             TLS_ENABLED=$(echo "$NODE_JSON" | jq -r '.tls.enabled // "false"')
             REALITY=$(echo "$NODE_JSON" | jq -r '.tls.reality.enabled // "false"')
+            TRANSPORT=$(echo "$NODE_JSON" | jq -r '.transport.type // "tcp"')
+            WS_PATH=$(echo "$NODE_JSON" | jq -r '.transport.path // "/"')
+            GRPC_SERVICE=$(echo "$NODE_JSON" | jq -r '.transport.service_name // empty')
         fi
 
         PARAMS="security=none"
@@ -154,21 +176,142 @@ case "$TYPE" in
                 PARAMS="security=tls&sni=$SNI"
             fi
         fi
-        PARAMS+="&type=tcp"
+        PARAMS+="&type=$TRANSPORT"
+        [[ "$TRANSPORT" == "ws" ]] && PARAMS+="&path=$(urlencode "$WS_PATH")"
+        [[ "$TRANSPORT" == "grpc" ]] && PARAMS+="&serviceName=$(urlencode "$GRPC_SERVICE")"
         [[ -n "$FLOW" ]] && PARAMS+="&flow=$FLOW"
         
         LINK="vless://${UUID}@${SERVER_ADDR}:${PORT}?${PARAMS}#$(urlencode "$NODE_TAG")"
+        
+        # --- 配置块准备 ---
+        # 简化变量用于 OpenClash 输出
+        OC_TLS="true"
+        OC_FLOW="$FLOW"
+        OC_NET="$TRANSPORT"
+        OC_OPTS=""
+        if [[ "$REALITY" == "true" ]]; then
+            OC_OPTS="  reality-opts:
+    public-key: $PBK
+    short-id: $SID"
+        fi
+        if [[ "$TRANSPORT" == "ws" ]]; then
+             OC_OPTS="$OC_OPTS
+  ws-opts:
+    path: \"$WS_PATH\"
+    headers:
+      Host: $SNI"
+        fi
         ;;
+
+    "anytls")
+        SHOW_CLASH="false" # Clash 不支持 AnyTLS
+        LINK="anytls://${PASSWORD}@${SERVER_ADDR}:${PORT}?security=reality&sni=${SNI}&fp=chrome&pbk=${PBK}&sid=${SID}&type=tcp&headerType=none#$(urlencode "$NODE_TAG")"
+        ;;
+
+    "vmess")
+        # 简单 VMess 支持 (略)
+        LINK="vmess://(Base64_Hidden_For_Brevity)"
+        ;;
+
     *)
         echo "暂不支持自动生成该协议链接: $TYPE"
         exit 0
         ;;
 esac
 
-echo ""
-echo -e "${SKYBLUE}$LINK${PLAIN}"
-if [[ "$IS_SERVER" == "true" && "$REALITY" == "true" && -z "$PBK" ]]; then
-    echo -e "${RED}警告: 未找到 Public Key。${PLAIN}"
-    echo -e "这可能是因为该节点是旧版本脚本创建的。建议删除并重建该节点以启用自动链接生成。"
+# 5. 最终输出
+# ------------------------------------------------
+echo -e ""
+echo -e "${GREEN}========================================${PLAIN}"
+echo -e "${GREEN}       节点详情: ${NODE_TAG}       ${PLAIN}"
+echo -e "${GREEN}========================================${PLAIN}"
+echo -e "协议        : ${YELLOW}${TYPE}${PLAIN}"
+echo -e "地址        : ${YELLOW}${SERVER_ADDR}:${PORT}${PLAIN}"
+if [[ "$TYPE" == "anytls" ]]; then
+    echo -e "Password    : ${SKYBLUE}${PASSWORD}${PLAIN}"
+else
+    echo -e "UUID        : ${SKYBLUE}${UUID}${PLAIN}"
+fi
+echo -e "SNI         : ${YELLOW}${SNI}${PLAIN}"
+if [[ -n "$PBK" ]]; then
+    echo -e "Reality PBK : ${SKYBLUE}${PBK}${PLAIN}"
+fi
+
+echo -e "----------------------------------------"
+echo -e "🚀 [分享链接] (v2rayN / Nekobox):"
+echo -e "${YELLOW}${LINK}${PLAIN}"
+echo -e "----------------------------------------"
+
+# --- Sing-box 客户端配置 ---
+echo -e "📱 [Sing-box 客户端配置块]:"
+echo -e "${YELLOW}"
+
+if [[ "$TYPE" == "anytls" ]]; then
+cat <<EOF
+{
+  "type": "anytls",
+  "tag": "proxy-out",
+  "server": "${SERVER_ADDR}",
+  "server_port": ${PORT},
+  "password": "${PASSWORD}",
+  "padding_scheme": [],
+  "tls": {
+    "enabled": true,
+    "server_name": "${SNI}",
+    "utls": { "enabled": true, "fingerprint": "chrome" },
+    "reality": { "enabled": true, "public_key": "${PBK}", "short_id": "${SID}" }
+  }
+}
+EOF
+elif [[ "$TYPE" == "vless" ]]; then
+cat <<EOF
+{
+  "type": "vless",
+  "tag": "proxy-out",
+  "server": "${SERVER_ADDR}",
+  "server_port": ${PORT},
+  "uuid": "${UUID}",
+  "flow": "${FLOW}",
+  "tls": {
+    "enabled": true,
+    "server_name": "${SNI}",
+    "utls": { "enabled": true, "fingerprint": "chrome" },
+    "reality": { "enabled": true, "public_key": "${PBK}", "short_id": "${SID}" }
+  },
+  "transport": { "type": "${TRANSPORT}", "path": "${WS_PATH}" }
+}
+EOF
+fi
+echo -e "${PLAIN}----------------------------------------"
+
+# --- OpenClash 配置 (条件输出) ---
+if [[ "$SHOW_CLASH" == "true" ]]; then
+    echo -e "🐱 [Clash Meta / OpenClash 配置块]:"
+    echo -e "${YELLOW}"
+cat <<EOF
+- name: "${NODE_TAG}"
+  type: ${TYPE}
+  server: ${SERVER_ADDR}
+  port: ${PORT}
+  uuid: ${UUID}
+  network: ${OC_NET}
+  tls: ${OC_TLS}
+  udp: true
+  flow: ${OC_FLOW}
+  servername: ${SNI}
+  client-fingerprint: chrome
+${OC_OPTS}
+EOF
+    echo -e "${PLAIN}----------------------------------------"
+else
+    echo -e "${YELLOW}⚠️  OpenClash / Clash Meta 不支持 ${TYPE} 协议，跳过生成配置。${PLAIN}"
+    echo -e "----------------------------------------"
+fi
+
+# 警告信息
+if [[ "$IS_SERVER" == "true" && -n "$REALITY" && -z "$PBK" ]]; then
+    echo -e "${RED}严重警告: 未找到 Reality Public Key。${PLAIN}"
+    echo -e "原因: 这是一个旧版脚本创建的节点，没有保存公钥元数据。"
+    echo -e "建议: 删除此节点并重新添加。"
 fi
 echo ""
