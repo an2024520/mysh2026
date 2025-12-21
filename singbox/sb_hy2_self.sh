@@ -2,10 +2,8 @@
 
 # ============================================================
 #  Sing-box 节点新增: Hysteria 2 + Self-Signed (自签证书)
+#  - 修复: 更改密码生成逻辑为 Hex，解决 v2rayN 导入失败问题
 #  - 核心: 自动生成 SSL 证书 + 写入 Inbounds + 写入 .meta
-#  - 协议: Hysteria 2 (UDP 暴力协议)
-#  - 特性: 支持 Obfs 混淆 / 自动生成自签证书 / 端口清理
-#  - 更新: 新增 OpenClash 格式输出
 # ============================================================
 
 # 颜色定义
@@ -17,7 +15,6 @@ PLAIN='\033[0m'
 echo -e "${GREEN}>>> [Sing-box] 智能添加节点: Hysteria 2 (自签证书版) ...${PLAIN}"
 
 # 1. 智能路径查找
-# ------------------------------------------------
 CONFIG_FILE=""
 PATHS=("/usr/local/etc/sing-box/config.json" "/etc/sing-box/config.json" "$HOME/sing-box/config.json")
 
@@ -35,7 +32,7 @@ fi
 CONFIG_DIR=$(dirname "$CONFIG_FILE")
 META_FILE="${CONFIG_FILE}.meta"
 SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
-CERT_DIR="${CONFIG_DIR}/cert" # 证书存放目录
+CERT_DIR="${CONFIG_DIR}/cert"
 
 echo -e "${GREEN}>>> 锁定配置文件: ${CONFIG_FILE}${PLAIN}"
 
@@ -87,15 +84,14 @@ while true; do
     fi
 done
 
-# B. 密码与混淆
-PASSWORD=$(openssl rand -base64 16)
+# B. 密码与混淆 (修复点: 使用 Hex 生成 URL 安全密码)
+PASSWORD=$(openssl rand -hex 16)
 OBFS_PASS=$(openssl rand -hex 8)
 
-echo -e "${YELLOW}已自动生成高强度密码与混淆密钥。${PLAIN}"
+echo -e "${YELLOW}已自动生成高强度密码与混淆密钥 (Hex模式/无特殊字符)。${PLAIN}"
 
 # 5. 生成自签证书
 echo -e "${YELLOW}正在生成自签证书...${PLAIN}"
-# 生成 100 年有效期的自签证书
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -keyout "$CERT_DIR/self_${PORT}.key" -out "$CERT_DIR/self_${PORT}.crt" -days 36500 -subj "/CN=bing.com" 2>/dev/null
 
 if [[ ! -f "$CERT_DIR/self_${PORT}.crt" ]]; then
@@ -166,7 +162,7 @@ if systemctl is-active --quiet sing-box; then
     PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
     NODE_NAME="$NODE_TAG"
     
-    # 构造 v2rayN 链接 (hy2://password@ip:port?insecure=1&obfs=salamander&obfs-password=xxx&sni=bing.com#tag)
+    # 构造链接
     SHARE_LINK="hysteria2://${PASSWORD}@${PUBLIC_IP}:${PORT}?insecure=1&obfs=salamander&obfs-password=${OBFS_PASS}&sni=bing.com#${NODE_NAME}"
 
     echo -e ""
@@ -220,5 +216,3 @@ EOF
 else
     echo -e "${RED}启动失败！请检查日志: journalctl -u sing-box -e${PLAIN}"
 fi
-
-}
