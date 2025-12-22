@@ -25,3 +25,4 @@ sb_module_node_del.sh https://raw.githubusercontent.com/an2024520/test/refs/head
 sb_hy2_self.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_hy2_self.sh
 sb_hy2_acme.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_hy2_acme.sh
 sb_module_warp_native_route.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_module_warp_native_route.sh
+fix_ipv6_dual_core.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/ipv6_only/fix_ipv6_dual_core.sh
