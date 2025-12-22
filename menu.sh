@@ -1,11 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.9.9 - 稳定修复版)
-#  - 修复说明: 
-#    1. 修复 menu_routing_sb 变量捕获失效问题
-#    2. 彻底隔离 check_ipv6_environment 作用域，防止函数嵌套
-#    3. 严格对齐原始排版、颜色与文字描述
+#  全能协议管理中心 (Commander v3.9.9 Final)
+#  - 状态: 已完成逻辑闭环检查
+#  - 警告: 请勿在启动时选择"清空目录"，否则会删除手动修复的补丁
 # ============================================================
 
 # 颜色定义
@@ -98,7 +96,7 @@ check_dir_clean() {
     if [[ "$file_count" -gt 0 ]]; then
         echo -e "${YELLOW}======================================================${PLAIN}"
         echo -e "${YELLOW} 检测到当前目录存在 $file_count 个历史文件。${PLAIN}"
-        echo -e "为了确保脚本运行在最新状态，建议在【空文件夹】下运行。"
+        echo -e "${RED} 警告：如果你手动上传了修复脚本，请务必选 n (不清理)！${PLAIN}"
         echo -e ""
         read -p "是否清空当前目录并强制更新所有组件? (y/n, 默认 n): " clean_opt
         if [[ "$clean_opt" == "y" ]]; then
@@ -125,6 +123,7 @@ get_url_by_name() {
 check_run() {
     local script_name="$1"
     local no_pause="$2"
+    # 逻辑：只有当文件不存在时才下载。如果手动上传了修复版，这里会直接跳过下载，使用本地文件。
     if [[ ! -f "$script_name" ]]; then
         echo -e "${YELLOW}正在获取组件 [$script_name] ...${PLAIN}"
         local script_url=$(get_url_by_name "$script_name")
@@ -139,7 +138,7 @@ check_run() {
 }
 
 # ==========================================
-# 3. 子菜单逻辑 (排版还原)
+# 3. 子菜单逻辑 (已修复变量捕获问题)
 # ==========================================
 
 menu_singbox_env() {
@@ -261,7 +260,6 @@ menu_routing() {
     done
 }
 
-# --- 其他菜单 (省略详细内容以对齐排版) ---
 menu_core() {
     while true; do
         clear
@@ -274,7 +272,7 @@ menu_core() {
         echo -e " ${SKYBLUE}5.${PLAIN} Cloudflare Tunnel"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
-        echo -e ""
+        echo ""
         read -p "选择: " choice
         case "$choice" in
             1) check_run "$FILE_XRAY_CORE" ;; 2) check_run "$FILE_XRAY_UNINSTALL" ;;
