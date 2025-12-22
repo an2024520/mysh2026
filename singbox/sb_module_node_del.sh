@@ -112,27 +112,30 @@ echo -e "${YELLOW}正在智能清洗 Config & Routes...${PLAIN}"
 
 # v3.4 核心逻辑保持不变 (智能清洗路由)
 jq --argjson tags "$JSON_TAGS" '
-    # 1. 删除节点定义
+    # 1. 删除节点定义 (Inbounds / Outbounds / Endpoints)
     del(.inbounds[]? | select(.tag as $t | $tags | index($t))) | 
     del(.outbounds[]? | select(.tag as $t | $tags | index($t))) |
     del(.endpoints[]? | select(.tag as $t | $tags | index($t))) |
     
-    # 2. 删除以被删节点为目标的规则 (outbound == tag)
+    # 2. 删除以被删节点为目标的路由规则 (outbound 匹配)
     del(.route.rules[]? | select(.outbound as $o | $tags | index($o))) |
 
-    # 3. 清洗引用了被删节点的规则 (inbound 包含 tag)
-    .route.rules |= map(
-        if .inbound then
-            # 将 inbound 转为数组，然后减去我们要删除的 tags
-            (.inbound | if type=="array" then . else [.] end) - $tags |
-            # 如果减完后为空，则丢弃该规则
-            if length == 0 then empty 
-            # 否则更新规则
-            else . as $new_ib | ($$ | .inbound = $new_ib) end
-        else
-            .
-        end
-    )
+    # 3. 清洗路由规则中的 inbound 引用
+    if .route.rules then
+        .route.rules |= map(
+            if .inbound then
+                # 统一转为数组并减去被删标签
+                ((if .inbound | type == "array" then .inbound else [.inbound] end) - $tags) as $rem
+                | if ($rem | length) == 0 then 
+                    empty # 如果减完没标签了，整条规则删除
+                  else 
+                    .inbound = $rem # 否则保留剩余标签
+                  end
+            else
+                . # 没有 inbound 字段的规则保持原样
+            end
+        )
+    else . end
 ' "$CONFIG_FILE" > "$TMP_FILE"
 
 if [[ $? -eq 0 && -s "$TMP_FILE" ]]; then
