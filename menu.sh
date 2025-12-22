@@ -70,10 +70,26 @@ FILE_BOOST="xray_module_boost.sh"
 
 # [核心修复] 检测 IPv6-Only 环境并配置持久化 NAT64
 check_ipv6_environment() {
-    # 1. 预检：如果 curl -4 1.1.1.1 能通，说明是原生双栈，直接通过
-    if curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null 2>&1; then
+    echo -e "${YELLOW}正在检测 IPv4 网络连通性 (针对高延迟环境)...${PLAIN}"
+    
+    # 1. 预检：将超时提高到 8-10 秒。
+    # 纯 IPv6 机器通过 NAT64 访问 1.1.1.1 的首包延迟极高，2秒经常不够。
+    if curl -4 -s --connect-timeout 10 https://1.1.1.1 >/dev/null 2>&1; then
+        echo -e "${GREEN}检测到 IPv4 连接正常。${PLAIN}"
         return
     fi
+    
+    # 2. 如果 1.1.1.1 不通，尝试通过域名探测 (触发 DNS64)
+    # 有些 NAT64 环境下 IP 直接访问受限，但域名访问正常。
+    if curl -s -m 10 https://www.google.com/generate_204 >/dev/null 2>&1; then
+         echo -e "${GREEN}检测到通过 DNS64/NAT64 的网络连接。${PLAIN}"
+         return
+    fi
+
+    # 3. 如果依然不通，再进入原本的 NAT64 自动配置逻辑
+    echo -e "${YELLOW}未检测到可用 IPv4 路径，正在尝试配置/修复 NAT64...${PLAIN}"
+    # ... 原有的 NAT64 写入逻辑 ...
+}
 
     # 2. 如果原生不通，检查是否已经配置了有效的 NAT64 (通过访问纯IPv4站点)
     if curl -s --connect-timeout 3 https://ipv4.google.com >/dev/null 2>&1; then
