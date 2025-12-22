@@ -1,0 +1,46 @@
+解决IPV6机器的cloudflare启动问题
+nano /etc/systemd/system/cloudflared.service
+############################################################
+[Unit]
+Description=cloudflared
+After=network.target
+
+[Service]
+TimeoutStartSec=0
+Type=simple
+User=root
+ExecStart=/usr/bin/cloudflared tunnel --protocol http2 --edge-ip-version 6 run --token 你的TOUKEN
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+############################################################
+
+cat <EOF> /etc/systemd/system/cloudflared.service
+[Unit]
+Description=cloudflared
+After=network.target
+
+[Service]
+TimeoutStartSec=0
+Type=simple
+User=root
+ExecStart=/usr/bin/cloudflared tunnel --protocol http2 --edge-ip-version 6 run --token 你的TOKEN
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+############################################################
+写入完成后，你需要运行以下命令使服务生效并启动：
+# 重载系统服务配置
+systemctl daemon-reload
+# 启动 cloudflared
+systemctl start cloudflared
+# 设置开机自启
+systemctl enable cloudflared
+# 检查状态
+systemctl status cloudflared</EOF>
