@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (SB-Commander v6.5 Final-Revised)
+#  Sing-box Native WARP 管理模块 (SB-Commander v6.5 Auto-Final)
 #  - 核心修复: 强制 IP 掩码 (/32 /128) 解决 Sing-box 解析崩溃
 #  - 物理链路: 强制 IPv6 Endpoint 绕过 NAT64 解析故障
-#  - 逻辑完整: 完美还原 v6.4 的全局接管子菜单 (IPv4/IPv6/双栈)
+#  - 自动化适配: 支持 auto_deploy.sh 的三要素传入与 Tag 分流
 # ============================================================
 
 RED='\033[0;31m'
@@ -282,7 +282,6 @@ mode_stream() {
     apply_routing_rule "$rule"
 }
 
-# [重要] 还原 v6.4 的 IPv4/IPv6/双栈 选择逻辑
 mode_global() {
     ensure_warp_exists || return
 
@@ -292,22 +291,16 @@ mode_global() {
     echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全局 (默认)"
     read -p "选择: " sub
     
-    # 1. 先添加防环回规则 (High Priority)
     local anti_loop_rule=$(jq -n '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "outbound": "direct" }')
     apply_routing_rule "$anti_loop_rule"
 
-    # 2. 根据选择生成规则
     local rule=""
     case "$sub" in
         a) rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }') ;;
         b) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }') ;;
-        *) 
-           # 双栈全局 Catch-All
-           rule=$(jq -n '{ "outbound": "WARP" }') 
-           ;;
+        *) rule=$(jq -n '{ "outbound": "WARP" }') ;;
     esac
     
-    # 应用全局规则
     apply_routing_rule "$rule"
     echo -e "${GREEN}全局接管策略已应用。防环回规则已置顶。${PLAIN}"
 }
@@ -384,4 +377,55 @@ show_menu() {
     done
 }
 
-show_menu
+# ==========================================
+# 5. 自动化入口 (Auto Main)
+# ==========================================
+
+auto_main() {
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署流程...${PLAIN}"
+    check_dependencies
+    
+    # --- 1. 凭证处理 (三要素检测) ---
+    if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
+        echo -e "${YELLOW}[自动模式] 检测到外部三要素凭证，正在应用...${PLAIN}"
+        local priv="$WARP_PRIV_KEY"
+        local pub="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+        local v4="172.16.0.2/32"
+        local v6="$WARP_IPV6"
+        local res="${WARP_RESERVED:-[0,0,0]}"
+        
+        save_credentials "$priv" "$pub" "$v4" "$v6" "$res"
+        write_warp_config "$priv" "$pub" "$v4" "$v6" "$res"
+    else
+        echo -e "${YELLOW}[自动模式] 无完整凭证，执行自动注册...${PLAIN}"
+        register_warp
+    fi
+
+    # --- 2. 路由模式应用 ---
+    local rule=""
+    case "$WARP_MODE_SELECT" in
+        1) rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }');;
+        2) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }');;
+        3)
+            # 处理逗号分隔的 Tag 字符串，转为 JSON 数组
+            if [[ -n "$WARP_INBOUND_TAGS" ]]; then
+                local tags_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
+                echo -e "   > 目标节点: $WARP_INBOUND_TAGS"
+                rule=$(jq -n --argjson ib "$tags_json" '{ "inbound": $ib, "outbound": "WARP" }')
+            fi
+            ;;
+        *) 
+            # 默认：流媒体
+            rule=$(jq -n '{ "domain_suffix": ["netflix.com","openai.com","google.com","youtube.com"], "outbound": "WARP" }');;
+    esac
+    
+    [[ -n "$rule" ]] && apply_routing_rule "$rule"
+    echo -e "${GREEN}>>> [WARP-SB] 自动化配置完成。${PLAIN}"
+}
+
+# 自动/手动 分流入口
+if [[ "$AUTO_SETUP" == "true" ]]; then
+    auto_main
+else
+    show_menu
+fi
