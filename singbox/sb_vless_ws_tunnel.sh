@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点模块: VLESS + WS (Tunnel专用)
+#  Sing-box 节点模块: VLESS + WS (Tunnel专用)(v1.2 Fix-Crash)
 #  - 模式: Manual (交互式) / Auto (变量传参)
 #  - 特性: 无 TLS，专用于 CF Tunnel 后端
 #  - 修复: 强化清理逻辑 (Tag + Port 双重清理)
