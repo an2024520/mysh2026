@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Native WARP 增强模块 (Clean & Pure Edition v1.1)
+#  Native WARP 增强模块 (Xray Auto-Enhanced v1.1)
 #  - 无需 Wireproxy，由 Xray 内核直接连接 Cloudflare
-#  - 纯净模式：移除所有硬编码共享 IP，确保独享与安全
-#  - 优化: 延迟加载 Python，纯 Shell 解析 Base64
+#  - 自动化: 支持 auto_deploy.sh 的三要素传入与 Tag 分流
+#  - 新增: 无头注册模式 (Headless Registration)
 # ============================================================
 
 # --- 1. 全局配置 (与 xray_core.sh 严格配套) ---
@@ -20,9 +20,8 @@ SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 GRAY='\033[0;37m'
 
-# --- 2. 依赖检查 (移除 Python 强制检查) ---
+# --- 2. 依赖检查 ---
 check_dependencies() {
-    # jq 是修改 config.json 的核心工具，xray_core.sh 通常已安装
     if ! command -v jq >/dev/null 2>&1; then
         echo -e "${YELLOW}正在安装 jq (JSON处理工具)...${PLAIN}"
         if [ -f /etc/debian_version ]; then
@@ -31,13 +30,11 @@ check_dependencies() {
             yum install -y jq
         fi
     fi
-    # 提示缺少 od (用于纯 Shell 解码)
     if ! command -v od >/dev/null 2>&1; then
         echo -e "${GRAY}提示: 系统未安装 od 工具，手动解码可能需要依赖 Python。${PLAIN}"
     fi
 }
 
-# 按需安装 Python (仅在自动注册或解码失败时调用)
 ensure_python() {
     if ! command -v python3 >/dev/null 2>&1; then
         echo -e "${YELLOW}该功能需要 Python3 支持 (计算/解码 Reserved)，正在安装...${PLAIN}"
@@ -55,21 +52,14 @@ ensure_python() {
     return 0
 }
 
-# 纯 Shell 实现 Base64 转数组 [1, 2, 3]
 base64_to_reserved_shell() {
     local input="$1"
-    # base64 解码 -> od 转十进制 -> tr 换行转逗号
     local bytes=$(echo "$input" | base64 -d 2>/dev/null | od -An -t u1 | tr -s ' ' ',')
-    # 清理头尾
     bytes=$(echo "$bytes" | sed 's/^,//;s/,$//;s/ //g')
-    if [ -n "$bytes" ]; then
-        echo "[$bytes]"
-    else
-        echo ""
-    fi
+    if [ -n "$bytes" ]; then echo "[$bytes]"; else echo ""; fi
 }
 
-# --- 3. 核心功能：获取 WARP 凭证 ---
+# --- 3. 核心功能：获取 WARP 凭证 (交互版) ---
 get_warp_credentials() {
     check_dependencies
     clear
@@ -86,11 +76,8 @@ get_warp_credentials() {
     local wp_res=""
 
     if [ "$choice" == "1" ]; then
-        # 自动注册必须依赖 Python 计算 Reserved
         ensure_python || return 1
-        
         echo -e "${YELLOW}正在准备 wgcf 环境...${PLAIN}"
-        
         local arch=$(uname -m)
         local wgcf_arch="amd64"
         case "$arch" in
@@ -102,7 +89,6 @@ get_warp_credentials() {
         local tmp_dir=$(mktemp -d)
         pushd "$tmp_dir" >/dev/null || return
 
-        # 下载官方 wgcf (安全可靠)
         wget -qO wgcf "https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_${wgcf_arch}"
         chmod +x wgcf
         
@@ -112,14 +98,10 @@ get_warp_credentials() {
 
         if [ ! -f wgcf-profile.conf ]; then
             echo -e "${RED}错误：注册失败。Cloudflare 可能限制了本机 IP 注册。${PLAIN}"
-            echo -e "${YELLOW}建议：在本地电脑运行 wgcf 注册好后，使用【手动输入】模式填入。${PLAIN}"
             popd >/dev/null; rm -rf "$tmp_dir"; read -p "按回车退出..."; return 1
         fi
 
-        # 提取 PrivateKey
         wp_key=$(grep 'PrivateKey' wgcf-profile.conf | cut -d ' ' -f 3 | tr -d '\n\r ')
-        
-        # 提取 Address (自动获取 Cloudflare 分配给你的唯一 v6 地址)
         local raw_addr=$(grep 'Address' wgcf-profile.conf | cut -d '=' -f 2 | tr -d ' ')
         if [[ "$raw_addr" == *","* ]]; then
             wp_ip=$(echo "$raw_addr" | awk -F',' '{print $2}' | cut -d'/' -f1 | tr -d '\n\r ')
@@ -127,7 +109,6 @@ get_warp_credentials() {
             wp_ip=$(echo "$raw_addr" | cut -d'/' -f1 | tr -d '\n\r ')
         fi
 
-        # 提取 Reserved (Python 算法)
         local client_id=$(grep "client_id" wgcf-account.toml | cut -d '"' -f 2)
         if [ -n "$client_id" ]; then
             wp_res=$(python3 -c "import base64; d=base64.b64decode('${client_id}'); print(f'[{d[0]}, {d[1]}, {d[2]}]')")
@@ -146,40 +127,28 @@ get_warp_credentials() {
     elif [ "$choice" == "2" ]; then
         echo -e "${YELLOW}请输入 Private Key (私钥):${PLAIN}"
         read -r wp_key
-        
         echo -e "${YELLOW}请输入 WARP IPv6 地址 (不带 /128):${PLAIN}"
-        echo -e "(例如: 2606:4700:110:xxxx:xxxx:xxxx:xxxx:xxxx)"
         read -r wp_ip
-        
         echo -e "${YELLOW}请输入 Reserved 值:${PLAIN}"
-        echo -e " - Base64 格式 (如 c+kIBA==)"
-        echo -e " - 数组格式 (如 [115, 233, 8])"
         read -r res_input
         
         if [[ -z "$res_input" ]]; then
             wp_res="[0, 0, 0]"
         elif [[ "$res_input" == *"["* ]]; then
-            # 已经是数组格式
             wp_res="$res_input"
         else
-            # 尝试纯 Shell 解码 Base64
             wp_res=$(base64_to_reserved_shell "$res_input")
-            
-            # 如果 Shell 解码失败 (例如无 od)，回退到 Python
             if [[ -z "$wp_res" ]]; then
                 echo -e "${YELLOW}Shell 解码失败，尝试使用 Python 解码...${PLAIN}"
                 ensure_python
                 if command -v python3 >/dev/null 2>&1; then
                     wp_res=$(python3 -c "import base64; d=base64.b64decode('${res_input}'); print(f'[{d[0]}, {d[1]}, {d[2]}]')" 2>/dev/null)
                 else
-                    echo -e "${RED}无法解析 Reserved，将使用默认值 [0, 0, 0] (可能导致连接失败)${PLAIN}"
                     wp_res="[0, 0, 0]"
                 fi
             fi
         fi
         
-        echo -e "识别到的 Reserved: ${GREEN}$wp_res${PLAIN}"
-
         if [ -z "$wp_key" ] || [ -z "$wp_ip" ]; then
             echo -e "${RED}错误：私钥和 IP 不能为空！${PLAIN}"
             return 1
@@ -188,7 +157,6 @@ get_warp_credentials() {
         return 1
     fi
 
-    # 保存凭证
     cat > "$WARP_CONF_FILE" <<EOF
 WP_KEY="$wp_key"
 WP_IP="$wp_ip"
@@ -198,14 +166,64 @@ EOF
     read -p "按回车键继续..."
 }
 
+# --- 3.5 [新增] 无头注册模式 (用于自动化) ---
+register_warp_headless() {
+    ensure_python || return 1
+    echo -e "${YELLOW}[自动模式] 正在准备 wgcf 环境...${PLAIN}"
+    
+    local arch=$(uname -m)
+    local wgcf_arch="amd64"
+    case "$arch" in
+        aarch64) wgcf_arch="arm64" ;;
+        x86_64) wgcf_arch="amd64" ;;
+    esac
+
+    local tmp_dir=$(mktemp -d)
+    pushd "$tmp_dir" >/dev/null || return
+
+    wget -qO wgcf "https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_${wgcf_arch}"
+    chmod +x wgcf
+    
+    echo "正在向 Cloudflare 注册新账户..."
+    ./wgcf register --accept-tos >/dev/null 2>&1
+    ./wgcf generate >/dev/null 2>&1
+
+    if [ ! -f wgcf-profile.conf ]; then
+        echo -e "${RED}错误：自动注册失败 (Cloudflare 限制)。${PLAIN}"
+        popd >/dev/null; rm -rf "$tmp_dir"; return 1
+    fi
+
+    local wp_key=$(grep 'PrivateKey' wgcf-profile.conf | cut -d ' ' -f 3 | tr -d '\n\r ')
+    local raw_addr=$(grep 'Address' wgcf-profile.conf | cut -d '=' -f 2 | tr -d ' ')
+    local wp_ip=""
+    if [[ "$raw_addr" == *","* ]]; then
+        wp_ip=$(echo "$raw_addr" | awk -F',' '{print $2}' | cut -d'/' -f1 | tr -d '\n\r ')
+    else
+        wp_ip=$(echo "$raw_addr" | cut -d'/' -f1 | tr -d '\n\r ')
+    fi
+
+    local client_id=$(grep "client_id" wgcf-account.toml | cut -d '"' -f 2)
+    local wp_res=""
+    if [ -n "$client_id" ]; then
+        wp_res=$(python3 -c "import base64; d=base64.b64decode('${client_id}'); print(f'[{d[0]}, {d[1]}, {d[2]}]')")
+    else
+        wp_res="[0, 0, 0]"
+    fi
+
+    cat > "$WARP_CONF_FILE" <<EOF
+WP_KEY="$wp_key"
+WP_IP="$wp_ip"
+WP_RES="$wp_res"
+EOF
+    echo -e "${GREEN}[自动模式] 注册成功，凭证已保存。${PLAIN}"
+    popd >/dev/null; rm -rf "$tmp_dir"
+}
+
 # --- 4. 核心功能：生成 Outbound JSON ---
 generate_warp_outbound() {
     if [ ! -f "$WARP_CONF_FILE" ]; then return 1; fi
     source "$WARP_CONF_FILE"
-
-    # 172.16.0.2 是 WARP 接口的标准内网 IPv4，这是协议固定值，无需修改
     local addr_json="\"172.16.0.2/32\", \"${WP_IP}/128\""
-
     cat <<EOF
 {
   "tag": "warp-out",
@@ -227,18 +245,16 @@ EOF
 }
 
 # --- 5. 核心功能：应用配置到 Xray ---
-# 参数1: 模式 (stream / ipv4 / ipv6 / dual / manual_node)
-# 参数2: 额外参数
 apply_warp_config() {
     local mode="$1"
     local extra_arg="$2"
 
-    if [ ! -f "$XRAY_CONFIG" ]; then echo -e "${RED}未找到 Xray 配置文件！请先安装核心并添加节点。${PLAIN}"; return; fi
+    if [ ! -f "$XRAY_CONFIG" ]; then echo -e "${RED}未找到 Xray 配置文件！${PLAIN}"; return; fi
     if [ ! -f "$WARP_CONF_FILE" ]; then echo -e "${RED}请先配置 WARP 账号！${PLAIN}"; return; fi
 
     echo -e "${YELLOW}正在修改 Xray 配置...${PLAIN}"
 
-    # 1. 清理旧配置 (原子操作)
+    # 1. 清理旧配置
     jq 'del(.outbounds[] | select(.tag=="warp-out"))' "$XRAY_CONFIG" > "${XRAY_CONFIG}.tmp" && mv "${XRAY_CONFIG}.tmp" "$XRAY_CONFIG"
     jq 'del(.routing.rules[] | select(.outboundTag=="warp-out"))' "$XRAY_CONFIG" > "${XRAY_CONFIG}.tmp" && mv "${XRAY_CONFIG}.tmp" "$XRAY_CONFIG"
 
@@ -250,32 +266,18 @@ apply_warp_config() {
     local rule_json=""
     case "$mode" in
         "stream")
-            # 模式一：智能分流 (流媒体 + AI)
-            rule_json='{
-                "type": "field",
-                "outboundTag": "warp-out",
-                "domain": ["geosite:netflix", "geosite:openai", "geosite:disney", "geosite:google", "geosite:youtube", "geosite:spotify"]
-            }'
-            ;;
+            rule_json='{ "type": "field", "outboundTag": "warp-out", "domain": ["geosite:netflix", "geosite:openai", "geosite:disney", "geosite:google", "geosite:youtube"] }' ;;
         "ipv4")
-            # 模式二：IPv4 全局接管
-            rule_json='{ "type": "field", "outboundTag": "warp-out", "network": "tcp,udp", "ip": ["0.0.0.0/0"] }'
-            ;;
+            rule_json='{ "type": "field", "outboundTag": "warp-out", "network": "tcp,udp", "ip": ["0.0.0.0/0"] }' ;;
         "ipv6")
-            # 模式二：IPv6 全局接管
-            rule_json='{ "type": "field", "outboundTag": "warp-out", "network": "tcp,udp", "ip": ["::/0"] }'
-            ;;
+            rule_json='{ "type": "field", "outboundTag": "warp-out", "network": "tcp,udp", "ip": ["::/0"] }' ;;
         "dual")
-            # 模式二：双栈全局接管
-            rule_json='{ "type": "field", "outboundTag": "warp-out", "network": "tcp,udp" }'
-            ;;
+            rule_json='{ "type": "field", "outboundTag": "warp-out", "network": "tcp,udp" }' ;;
         "manual_node")
-            # 模式三：指定节点接管
-            rule_json="{ \"type\": \"field\", \"outboundTag\": \"warp-out\", \"inboundTag\": $extra_arg }"
-            ;;
+            rule_json="{ \"type\": \"field\", \"outboundTag\": \"warp-out\", \"inboundTag\": $extra_arg }" ;;
     esac
 
-    # 4. 注入路由规则 (优先级最高，插到最前)
+    # 4. 注入路由规则
     if [ -n "$rule_json" ]; then
         jq --argjson new_rule "$rule_json" '.routing.rules = [$new_rule] + .routing.rules' "$XRAY_CONFIG" > "${XRAY_CONFIG}.tmp" && mv "${XRAY_CONFIG}.tmp" "$XRAY_CONFIG"
     fi
@@ -287,8 +289,7 @@ apply_warp_config() {
     if systemctl is-active --quiet xray; then
         echo -e "${GREEN}Native WARP 模式已生效！${PLAIN}"
     else
-        echo -e "${RED}Xray 重启失败，请检查日志 (journalctl -u xray -e)。${PLAIN}"
-        echo -e "${YELLOW}可能是 Reserved 值不正确，或 IP 被 Cloudflare 拒绝。${PLAIN}"
+        echo -e "${RED}Xray 重启失败。${PLAIN}"
     fi
 }
 
@@ -296,10 +297,8 @@ apply_warp_config() {
 disable_warp() {
     if [ ! -f "$XRAY_CONFIG" ]; then return; fi
     echo -e "${YELLOW}正在移除 Native WARP 配置...${PLAIN}"
-    
     jq 'del(.outbounds[] | select(.tag=="warp-out"))' "$XRAY_CONFIG" > "${XRAY_CONFIG}.tmp" && mv "${XRAY_CONFIG}.tmp" "$XRAY_CONFIG"
     jq 'del(.routing.rules[] | select(.outboundTag=="warp-out"))' "$XRAY_CONFIG" > "${XRAY_CONFIG}.tmp" && mv "${XRAY_CONFIG}.tmp" "$XRAY_CONFIG"
-    
     systemctl restart xray
     echo -e "${GREEN}已恢复直连模式。${PLAIN}"
 }
@@ -307,43 +306,26 @@ disable_warp() {
 # --- 7. 交互逻辑：模式三节点选择器 ---
 select_nodes_interactive() {
     if [ ! -f "$XRAY_CONFIG" ]; then echo "无配置文件"; return; fi
-    
     echo -e "${SKYBLUE}正在读取当前节点列表...${PLAIN}"
-    # 使用 jq 提取 index, tag, port, protocol
     local node_list=$(jq -r '.inbounds[] | "\(.tag)|\(.port)|\(.protocol)"' "$XRAY_CONFIG" | nl -w 2 -s " ")
     
-    if [ -z "$node_list" ]; then
-        echo -e "${RED}未找到任何入站节点。请先去【节点管理】添加节点。${PLAIN}"; return
-    fi
-
-    echo -e "------------------------------------------------"
-    echo -e "序号  |  Tag (标签)  |  端口  |  协议"
-    echo -e "------------------------------------------------"
+    if [ -z "$node_list" ]; then echo -e "${RED}未找到任何入站节点。${PLAIN}"; return; fi
     echo "$node_list" | awk -F'|' '{printf "%s | %-12s | %-5s | %s\n", $1, $2, $3, $4}'
-    echo -e "------------------------------------------------"
-    echo -e "${YELLOW}请输入要走 WARP 的节点序号 (支持多选，空格分隔，如: 1 3)${PLAIN}"
-    read -p "选择: " selection
+    read -p "选择序号 (空格分隔): " selection
 
     local selected_tags_json="["
     local first=true
-
     for num in $selection; do
         local raw_line=$(echo "$node_list" | sed -n "${num}p")
         local tag=$(echo "$raw_line" | awk -F'|' '{print $1}' | awk '{print $2}')
-        
         if [ -n "$tag" ] && [ "$tag" != "null" ]; then
             if [ "$first" = true ]; then first=false; else selected_tags_json+=","; fi
             selected_tags_json+="\"$tag\""
-            echo -e "已选择: ${GREEN}$tag${PLAIN}"
         fi
     done
     selected_tags_json+="]"
 
-    if [ "$selected_tags_json" == "[]" ]; then
-        echo -e "${RED}未选择有效节点。${PLAIN}"
-    else
-        apply_warp_config "manual_node" "$selected_tags_json"
-    fi
+    if [ "$selected_tags_json" == "[]" ]; then echo -e "${RED}无效选择。${PLAIN}"; else apply_warp_config "manual_node" "$selected_tags_json"; fi
 }
 
 # --- 8. 主菜单入口 ---
@@ -354,32 +336,16 @@ show_warp_menu() {
         local status_text="${RED}未配置${PLAIN}"
         if [ -f "$WARP_CONF_FILE" ]; then status_text="${GREEN}已获取凭证${PLAIN}"; fi
         
-        local current_mode="直连"
-        if grep -q '"outboundTag": "warp-out"' "$XRAY_CONFIG"; then
-            if grep -q '"domain": \[' "$XRAY_CONFIG"; then current_mode="${SKYBLUE}智能分流${PLAIN}";
-            elif grep -q '"0.0.0.0/0"' "$XRAY_CONFIG"; then current_mode="${YELLOW}IPv4 接管${PLAIN}";
-            elif grep -q '"inboundTag":' "$XRAY_CONFIG"; then current_mode="${YELLOW}指定节点${PLAIN}";
-            else current_mode="${YELLOW}WARP 生效中${PLAIN}"; fi
-        fi
-
         echo -e "${GREEN}================ Native WARP 配置向导 ================${PLAIN}"
-        echo -e " 凭证状态: [$status_text]   当前模式: [$current_mode]"
+        echo -e " 凭证状态: [$status_text]"
         echo -e "----------------------------------------------------"
-        echo -e " [基础账号]"
         echo -e " 1. 注册/配置 WARP 凭证 (自动获取 或 手动输入)" 
         echo -e " 2. 查看当前凭证信息"
-        echo -e ""
-        echo -e " [策略模式 - 单选]"
+        echo -e "----------------------------------------------------"
         echo -e " 3. ${SKYBLUE}模式一：智能流媒体分流 (推荐)${PLAIN}"
-        echo -e "    ${GRAY}(Netflix/Disney+/OpenAI/Google -> WARP)${PLAIN}"
-        echo -e ""
-        echo -e " 4. ${SKYBLUE}模式二：全局接管 (隐藏 IP)${PLAIN}"
-        echo -e "    ${GRAY}---> 拯救 Google 验证码 / 单栈变双栈${PLAIN}"
-        echo -e ""
+        echo -e " 4. ${SKYBLUE}模式二：全局接管 (IPv4/IPv6/双栈)${PLAIN}"
         echo -e " 5. ${SKYBLUE}模式三：指定节点接管 (多节点共存)${PLAIN}"
-        echo -e "    ${GRAY}---> 选择特定端口强制走 WARP 出口${PLAIN}"
-        echo -e ""
-        echo -e " [维护]"
+        echo -e "----------------------------------------------------"
         echo -e " 7. ${RED}禁用/卸载 Native WARP (恢复直连)${PLAIN}"
         echo -e " 0. 返回上级菜单"
         echo -e "===================================================="
@@ -387,30 +353,17 @@ show_warp_menu() {
 
         case "$choice" in
             1) get_warp_credentials ;; 
-            2) 
-                if [ -f "$WARP_CONF_FILE" ]; then
-                    source "$WARP_CONF_FILE"
-                    echo -e "Private Key: ${YELLOW}$WP_KEY${PLAIN}"
-                    echo -e "IPv6 Address:${YELLOW}$WP_IP${PLAIN}"
-                    echo -e "Reserved:    ${YELLOW}$WP_RES${PLAIN}"
-                else
-                    echo "暂无信息，请先选择选项 1 进行配置。"
-                fi
-                read -p "按回车继续..." 
-                ;;
+            2) cat "$WARP_CONF_FILE" 2>/dev/null; read -p "按回车继续..." ;;
             3) apply_warp_config "stream" ;;
             4) 
-                echo -e " a. 仅接管 IPv4"
-                echo -e " b. 仅接管 IPv6"
-                echo -e " c. 双栈全接管"
+                echo -e " a. 仅接管 IPv4  b. 仅接管 IPv6  c. 双栈全接管"
                 read -p "选择: " sub
                 case "$sub" in
                     a) apply_warp_config "ipv4" ;;
                     b) apply_warp_config "ipv6" ;;
                     c) apply_warp_config "dual" ;;
                 esac
-                read -p "按回车继续..."
-                ;;
+                read -p "按回车继续..." ;;
             5) select_nodes_interactive; read -p "按回车继续..." ;;
             7) disable_warp; read -p "按回车继续..." ;;
             0) break ;;
@@ -419,5 +372,52 @@ show_warp_menu() {
     done
 }
 
-# 脚本直接执行入口
-show_warp_menu
+# ==========================================
+# 9. 自动化入口 (Auto Main)
+# ==========================================
+
+auto_main() {
+    echo -e "${GREEN}>>> [WARP-Xray] 启动自动化部署流程...${PLAIN}"
+    check_dependencies
+    
+    # 1. 凭证处理
+    if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
+        echo -e "${YELLOW}[自动模式] 应用三要素凭证...${PLAIN}"
+        cat > "$WARP_CONF_FILE" <<EOF
+WP_KEY="$WARP_PRIV_KEY"
+WP_IP="$WARP_IPV6"
+WP_RES="${WARP_RESERVED:-[0,0,0]}"
+EOF
+    else
+        echo -e "${YELLOW}[自动模式] 执行无头自动注册...${PLAIN}"
+        register_warp_headless
+        if [ ! -f "$WARP_CONF_FILE" ]; then
+            echo -e "${RED}[错误] 自动注册失败，跳过 WARP 配置。${PLAIN}"
+            return
+        fi
+    fi
+    
+    # 2. 路由模式应用
+    case "$WARP_MODE_SELECT" in
+        1) apply_warp_config "ipv4" ;;
+        2) apply_warp_config "ipv6" ;;
+        3) 
+            # 解析逗号分隔字符串为 JSON 数组: "tag1,tag2" -> ["tag1","tag2"]
+            if [[ -n "$WARP_INBOUND_TAGS" ]]; then
+                local tags_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
+                echo -e "   > 目标节点: $WARP_INBOUND_TAGS"
+                apply_warp_config "manual_node" "$tags_json"
+            fi
+            ;;
+        *) apply_warp_config "stream" ;;
+    esac
+    
+    echo -e "${GREEN}>>> [WARP-Xray] 自动化配置完成。${PLAIN}"
+}
+
+# 自动/手动 分流入口
+if [[ "$AUTO_SETUP" == "true" ]]; then
+    auto_main
+else
+    show_warp_menu
+fi
