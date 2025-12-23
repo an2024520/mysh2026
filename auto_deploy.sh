@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v5.1 Logic Fix)
-#  - 核心修复: 修复 Tag 聚合污染问题，实现 Tag 核心级隔离
-#  - 逻辑确认: 节点部署完成后 -> 统一执行 WARP 路由
+#  Commander Auto-Deploy (v6.0 Final Refined)
+#  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
+#  - 新增特性: 目录自清理 (保护 menu.sh) | 智能联动 | 极简仪表盘
 # ============================================================
 
 # --- 基础定义 ---
@@ -15,7 +15,40 @@ PLAIN='\033[0m'
 URL_LIST="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST="/tmp/sh_url.txt"
 
-# --- 1. 执行引擎 (Backend Executor) ---
+# ============================================================
+#  0. 环境预处理 (借鉴 menu.sh 优良习惯)
+# ============================================================
+
+check_dir_clean() {
+    # 只在交互模式下询问，如果是纯自动模式(外部变量传入)则默认清理或跳过
+    # 这里保持与 menu.sh 一致的交互逻辑
+    local current_script=$(basename "$0")
+    # 排除列表: 自己, menu.sh, git目录, 配置文件
+    local count=$(ls -1 | grep -vE "^($current_script|menu.sh|sh_url.txt|README.md|.git|.gitignore)$" | wc -l)
+    
+    if [[ "$count" -gt 0 ]]; then
+        clear
+        echo -e "${YELLOW}======================================================${PLAIN}"
+        echo -e "${YELLOW} 检测到目录下存在 $count 个旧文件/脚本。${PLAIN}"
+        echo -e "${GRAY} 为了确保您使用的是最新版本的组件，建议清理旧文件。${PLAIN}"
+        echo -e "${GRAY} (已自动保护 menu.sh 和 auto_deploy.sh 不会被删除)${PLAIN}"
+        echo -e "${YELLOW}======================================================${PLAIN}"
+        echo -e ""
+        read -p "是否清理旧文件? (y/n, 默认 y): " clean_opt
+        clean_opt=${clean_opt:-y}
+
+        if [[ "$clean_opt" == "y" ]]; then
+            echo -e "${YELLOW}正在清理...${PLAIN}"
+            # 这里的 grep -vE 确保了“双轨制”的另一套系统不会被误删
+            ls | grep -vE "^($current_script|menu.sh|sh_url.txt|README.md|.git|.gitignore)$" | xargs rm -rf
+            echo -e "${GREEN}清理完成。${PLAIN}"; sleep 1
+        fi
+    fi
+}
+
+# ============================================================
+#  1. 执行引擎 (Backend Executor)
+# ============================================================
 
 init_urls() {
     wget -qO "$LOCAL_LIST" "$URL_LIST"
@@ -41,76 +74,58 @@ deploy_logic() {
     echo -e "${GREEN}>>> 正在处理您的订单 (开始部署)...${PLAIN}"
     init_urls
     
-    # 定义两个独立的 Tag 蓄水池
+    # 蓄水池初始化
     local SB_TAGS_ACC=""
     local XRAY_TAGS_ACC=""
 
-    # === 1. 部署 Sing-box 体系 ===
+    # === 1. Sing-box 体系 ===
     if [[ "$INSTALL_SB" == "true" ]]; then
         echo -e "${GREEN}>>> [Sing-box] 部署核心...${PLAIN}"
         run "sb_install_core.sh"
         
         if [[ "$DEPLOY_SB_VISION" == "true" ]]; then
-            echo -e "${GREEN}>>> [SB] Vision 节点 (端口: ${VAR_SB_VISION_PORT})...${PLAIN}"
+            echo -e "${GREEN}>>> [SB] Vision 节点 (: ${VAR_SB_VISION_PORT})...${PLAIN}"
             PORT=$VAR_SB_VISION_PORT run "sb_vless_vision_reality.sh"
-            # 记录 Tag 到 SB 蓄水池
             SB_TAGS_ACC+="Vision-${VAR_SB_VISION_PORT},"
         fi
         
         if [[ "$DEPLOY_SB_WS" == "true" ]]; then
-             echo -e "${GREEN}>>> [SB] WS 节点 (端口: ${VAR_SB_WS_PORT})...${PLAIN}"
+             echo -e "${GREEN}>>> [SB] WS 节点 (: ${VAR_SB_WS_PORT})...${PLAIN}"
              PORT=$VAR_SB_WS_PORT run "sb_vless_ws_tls.sh"
              SB_TAGS_ACC+="WS-${VAR_SB_WS_PORT},"
         fi
     fi
 
-    # === 2. 部署 Xray 体系 ===
+    # === 2. Xray 体系 ===
     if [[ "$INSTALL_XRAY" == "true" ]]; then
         echo -e "${GREEN}>>> [Xray] 部署核心...${PLAIN}"
         run "xray_core.sh"
         
         if [[ "$DEPLOY_XRAY_VISION" == "true" ]]; then
-            echo -e "${GREEN}>>> [Xray] Vision 节点 (端口: ${VAR_XRAY_VISION_PORT})...${PLAIN}"
+            echo -e "${GREEN}>>> [Xray] Vision 节点 (: ${VAR_XRAY_VISION_PORT})...${PLAIN}"
             PORT=$VAR_XRAY_VISION_PORT run "xray_vless_vision_reality.sh"
-            # 记录 Tag 到 Xray 蓄水池
             XRAY_TAGS_ACC+="Vision-${VAR_XRAY_VISION_PORT},"
         fi
     fi
 
-    # === 3. 部署 WARP (智能分发 + 隔离) ===
+    # === 3. WARP 模块 (分发与隔离) ===
     if [[ "$INSTALL_WARP" == "true" ]]; then
-        echo -e "${GREEN}>>> [WARP] 正在配置出站与路由...${PLAIN}"
+        echo -e "${GREEN}>>> [WARP] 配置路由出口...${PLAIN}"
         
-        # [逻辑分支 A] 应用于 Sing-box
+        # 分发给 Sing-box
         if [[ "$INSTALL_SB" == "true" ]]; then
-            echo -e "${GREEN}   > 正在配置 Sing-box 核心...${PLAIN}"
-            
-            # 仅分发 Sing-box 的 Tags
             export WARP_INBOUND_TAGS="${SB_TAGS_ACC%,}"
-            
-            if [[ "$WARP_MODE_SELECT" == "3" ]] && [[ -n "$WARP_INBOUND_TAGS" ]]; then
-                 echo -e "     [分流目标] ${SKYBLUE}${WARP_INBOUND_TAGS}${PLAIN}"
-            fi
-            
             run "sb_module_warp_native_route.sh"
         fi
         
-        # [逻辑分支 B] 应用于 Xray
+        # 分发给 Xray
         if [[ "$INSTALL_XRAY" == "true" ]]; then
-            echo -e "${GREEN}   > 正在配置 Xray 核心...${PLAIN}"
-            
-            # 仅分发 Xray 的 Tags
             export WARP_INBOUND_TAGS="${XRAY_TAGS_ACC%,}"
-            
-            if [[ "$WARP_MODE_SELECT" == "3" ]] && [[ -n "$WARP_INBOUND_TAGS" ]]; then
-                 echo -e "     [分流目标] ${SKYBLUE}${WARP_INBOUND_TAGS}${PLAIN}"
-            fi
-            
             run "xray_module_warp_native_route.sh"
         fi
     fi
 
-    # === 4. Argo Tunnel ===
+    # === 4. Argo ===
     if [[ "$INSTALL_ARGO" == "true" ]]; then
         echo -e "${GREEN}>>> [Argo] 配置 Tunnel...${PLAIN}"
         run "install_cf_tunnel_debian.sh"
@@ -125,48 +140,58 @@ deploy_logic() {
 # ============================================================
 
 get_status() {
-    if [[ "$1" == "true" ]]; then echo -e "${GREEN}[已选]${PLAIN}"; else echo -e "${PLAIN}[    ]${PLAIN}"; fi
+    if [[ "$1" == "true" ]]; then echo -e "${GREEN}√${PLAIN}"; else echo -e "${PLAIN} ${PLAIN}"; fi
 }
 
 show_dashboard() {
     clear
     echo -e "${SKYBLUE}==============================================${PLAIN}"
-    echo -e "${SKYBLUE}    Commander 自动部署 - 选购清单 v5.1     ${PLAIN}"
+    echo -e "${SKYBLUE}       Commander 选购清单 (Auto Mode)      ${PLAIN}"
     echo -e "${SKYBLUE}==============================================${PLAIN}"
     
-    echo -e "${YELLOW}--- 核心与协议 ---${PLAIN}"
+    # --- 极简风格仪表盘 ---
+    local has_item=false
+
+    # 1. 核心与节点
     if [[ "$INSTALL_SB" == "true" ]]; then
-        echo -n "  Sing-box    : ${GREEN}安装${PLAIN}"
-        [[ "$DEPLOY_SB_VISION" == "true" ]] && echo -n " | Vision(:$VAR_SB_VISION_PORT)"
-        [[ "$DEPLOY_SB_WS" == "true" ]] && echo -n " | WS(:$VAR_SB_WS_PORT)"
-        echo ""
-    fi
-    if [[ "$INSTALL_XRAY" == "true" ]]; then
-        echo -n "  Xray        : ${GREEN}安装${PLAIN}"
-        [[ "$DEPLOY_XRAY_VISION" == "true" ]] && echo -n " | Vision(:$VAR_XRAY_VISION_PORT)"
-        echo ""
+        echo -e "${YELLOW}● Sing-box Core${PLAIN}"
+        [[ "$DEPLOY_SB_VISION" == "true" ]] && echo -e "  ├─ Vision Reality  [Port: ${GREEN}$VAR_SB_VISION_PORT${PLAIN}]"
+        [[ "$DEPLOY_SB_WS" == "true" ]]     && echo -e "  └─ VLESS WS TLS    [Port: ${GREEN}$VAR_SB_WS_PORT${PLAIN}]"
+        has_item=true
     fi
     
-    echo -e "${YELLOW}--- WARP 出口优化 ---${PLAIN}"
-    if [[ "$INSTALL_WARP" == "true" ]]; then
-        echo -n "  WARP 路由   : ${GREEN}启用${PLAIN}"
-        case "$WARP_MODE_SELECT" in
-            1) echo -n " (分流: IPv4优先)";;
-            2) echo -n " (分流: IPv6优先)";;
-            3) echo -n " (分流: 指定节点接管)";;
-            *) echo -n " (默认)";;
-        esac
-        if [[ -n "$WARP_PRIV_KEY" ]]; then echo -n " [自备账号]"; else echo -n " [自动注册]"; fi
-        echo ""
-    else
-        echo -e "  WARP 路由   : 未启用"
+    if [[ "$INSTALL_XRAY" == "true" ]]; then
+        echo -e "${YELLOW}● Xray Core${PLAIN}"
+        [[ "$DEPLOY_XRAY_VISION" == "true" ]] && echo -e "  └─ Vision Reality  [Port: ${GREEN}$VAR_XRAY_VISION_PORT${PLAIN}]"
+        has_item=true
     fi
 
-    echo -e "${YELLOW}--- 附加组件 ---${PLAIN}"
+    # 2. WARP
+    if [[ "$INSTALL_WARP" == "true" ]]; then
+        local mode_str="流媒体分流"
+        case "$WARP_MODE_SELECT" in
+            1) mode_str="IPv4 优先" ;;
+            2) mode_str="IPv6 优先" ;;
+            3) mode_str="指定节点接管" ;;
+        esac
+        local acc_str="自动注册"
+        [[ -n "$WARP_PRIV_KEY" ]] && acc_str="自备账号"
+        
+        echo -e "${YELLOW}● WARP 路由优化${PLAIN}"
+        echo -e "  ├─ 模式: ${SKYBLUE}${mode_str}${PLAIN}"
+        echo -e "  └─ 凭证: ${GRAY}${acc_str}${PLAIN}"
+        has_item=true
+    fi
+
+    # 3. Argo
     if [[ "$INSTALL_ARGO" == "true" ]]; then
-        echo -e "  Argo Tunnel : ${GREEN}启用${PLAIN} (Domain: ${ARGO_DOMAIN})"
-    else
-        echo -e "  Argo Tunnel : 未启用"
+        echo -e "${YELLOW}● Argo Tunnel${PLAIN}"
+        echo -e "  └─ 域名: ${GREEN}${ARGO_DOMAIN}${PLAIN}"
+        has_item=true
+    fi
+
+    if [[ "$has_item" == "false" ]]; then
+        echo -e "${GRAY}  (购物车是空的, 请选择商品...)${PLAIN}"
     fi
     echo -e "=============================================="
 }
@@ -175,13 +200,28 @@ show_dashboard() {
 menu_protocols() {
     while true; do
         clear; echo -e "${SKYBLUE}=== 协议选择 ===${PLAIN}"
-        echo -e " 1. $(get_status $DEPLOY_SB_VISION) SB-Vision"; 
-        echo -e " 2. $(get_status $DEPLOY_XRAY_VISION) Xray-Vision"; 
-        echo " 0. 返回"
+        # 使用更直观的开关显示
+        echo -e " 1. [$(get_status $DEPLOY_SB_VISION)] Sing-box Vision"
+        echo -e " 2. [$(get_status $DEPLOY_XRAY_VISION)] Xray Vision"
+        echo ""
+        echo -e " 0. 返回"
         read -p "选择: " c
         case $c in
-            1) if [[ "$DEPLOY_SB_VISION" == "true" ]]; then DEPLOY_SB_VISION=false; else DEPLOY_SB_VISION=true; INSTALL_SB=true; read -p "端口(443): " p; VAR_SB_VISION_PORT="${p:-443}"; fi ;;
-            2) if [[ "$DEPLOY_XRAY_VISION" == "true" ]]; then DEPLOY_XRAY_VISION=false; else DEPLOY_XRAY_VISION=true; INSTALL_XRAY=true; read -p "端口(1443): " p; VAR_XRAY_VISION_PORT="${p:-1443}"; fi ;;
+            1) 
+                if [[ "$DEPLOY_SB_VISION" == "true" ]]; then 
+                    DEPLOY_SB_VISION=false
+                    # 简单检查：如果关了唯一的SB节点，是否要关核心？(暂不处理，保持简单)
+                else 
+                    DEPLOY_SB_VISION=true; INSTALL_SB=true
+                    read -p "端口(443): " p; VAR_SB_VISION_PORT="${p:-443}"
+                fi ;;
+            2) 
+                if [[ "$DEPLOY_XRAY_VISION" == "true" ]]; then 
+                    DEPLOY_XRAY_VISION=false
+                else 
+                    DEPLOY_XRAY_VISION=true; INSTALL_XRAY=true
+                    read -p "端口(1443): " p; VAR_XRAY_VISION_PORT="${p:-1443}"
+                fi ;;
             0) break ;;
         esac
     done
@@ -191,41 +231,46 @@ menu_protocols() {
 menu_warp() {
     while true; do
         clear
-        echo -e "${SKYBLUE}=== WARP 路由出口配置 ===${PLAIN}"
+        echo -e "${SKYBLUE}=== WARP 路由配置 ===${PLAIN}"
+        echo -e "当前状态: [$(get_status $INSTALL_WARP)]"
         echo ""
-        echo -e "当前状态: $(get_status $INSTALL_WARP)"
-        echo ""
-        echo -e " 1. 启用 WARP"
-        echo -e " 2. 配置 WARP 账号 (自动注册 / 手动录入)"
-        echo -e " 3. 选择分流模式 [当前: ${WARP_MODE_SELECT:-未选}]"
-        echo -e " 4. 禁用 WARP"
+        echo -e " 1. 启用/配置 WARP 账号"
+        echo -e " 2. 选择分流模式"
+        echo -e " 3. ${RED}清空 WARP 购物车 (Disable)${PLAIN}"
         echo ""
         echo -e " 0. 返回"
-        echo ""
-        read -p "请选择: " w_choice
-        case $w_choice in
-            1) INSTALL_WARP=true; [[ -z "$WARP_MODE_SELECT" ]] && WARP_MODE_SELECT=1 ;;
-            2) 
-                echo -e "   1. 自动注册免费账号 (默认)"
-                echo -e "   2. 手动录入 (Private Key / IPv6 / Reserved)"
-                read -p "   选择: " acc_type
-                if [[ "$acc_type" == "2" ]]; then
+        read -p "选择: " w
+        case $w in
+            1)
+                INSTALL_WARP=true
+                # 默认模式兜底
+                [[ -z "$WARP_MODE_SELECT" ]] && WARP_MODE_SELECT=1
+                echo -e "   1. 自动注册 (默认)"
+                echo -e "   2. 手动录入 (私钥/IPv6/Reserved)"
+                read -p "   选择: " acc
+                if [[ "$acc" == "2" ]]; then
                     read -p "   Private Key: " k; export WARP_PRIV_KEY="$k"
-                    read -p "   IPv6 Address (xxxx:xxxx:...): " i; export WARP_IPV6="$i"
-                    read -p "   Reserved ([x,x,x] 或 base64): " r; export WARP_RESERVED="$r"
+                    read -p "   IPv6 Address: " i; export WARP_IPV6="$i"
+                    read -p "   Reserved [x,x,x]: " r; export WARP_RESERVED="$r"
                 else
                     unset WARP_PRIV_KEY WARP_IPV6 WARP_RESERVED
-                    echo -e "   -> 已设为自动注册模式"
                 fi
                 ;;
-            3) 
+            2)
+                # 联动逻辑：选模式 = 启用
+                INSTALL_WARP=true
                 echo -e "   1. IPv4 优先 (全局 IPv4 流量走 WARP)"
                 echo -e "   2. IPv6 优先 (全局 IPv6 流量走 WARP)"
                 echo -e "   3. 指定节点接管 (仅选中的节点出口走 WARP)"
                 read -p "   选择模式 (1-3): " m
                 if [[ "$m" =~ ^[1-3]$ ]]; then export WARP_MODE_SELECT="$m"; fi
                 ;;
-            4) INSTALL_WARP=false; unset WARP_MODE_SELECT WARP_PRIV_KEY WARP_IPV6 WARP_RESERVED ;;
+            3)
+                INSTALL_WARP=false
+                unset WARP_MODE_SELECT WARP_PRIV_KEY WARP_IPV6 WARP_RESERVED
+                echo -e "${YELLOW}已从购物车移除 WARP。${PLAIN}"
+                sleep 1
+                ;;
             0) break ;;
         esac
     done
@@ -235,10 +280,13 @@ menu_warp() {
 menu_argo() {
     while true; do
         clear; echo -e "${SKYBLUE}=== Argo 配置 ===${PLAIN}"
-        echo -e " 1. 启用/配置"; echo " 0. 返回"
+        echo -e " 1. 启用 Argo"
+        echo -e " 2. 清空 Argo"
+        echo " 0. 返回"
         read -p "选择: " c
         case $c in
             1) INSTALL_ARGO=true; read -p "Token: " t; export ARGO_AUTH="$t"; read -p "Domain: " d; export ARGO_DOMAIN="$d" ;;
+            2) INSTALL_ARGO=false; unset ARGO_AUTH; unset ARGO_DOMAIN ;;
             0) break ;;
         esac
     done
@@ -246,19 +294,37 @@ menu_argo() {
 
 # --- 主循环 ---
 export AUTO_SETUP=true
+
+# 0. 启动清理检查 (交互)
+if [[ -z "$INSTALL_SB" ]] && [[ -z "$INSTALL_XRAY" ]]; then
+    # 只有在没有外部变量传入(即手动运行auto_deploy)时才执行清理检查
+    check_dir_clean
+fi
+
+# 判断高级模式
 if [[ -n "$INSTALL_SB" ]] || [[ -n "$INSTALL_XRAY" ]] || [[ -n "$INSTALL_ARGO" ]]; then
     deploy_logic; exit 0
 fi
 
 while true; do
     show_dashboard
-    echo -e " ${GREEN}1.${PLAIN} 协议选择"; echo -e " ${GREEN}2.${PLAIN} WARP 路由配置"; echo -e " ${GREEN}3.${PLAIN} Argo 隧道"
-    echo -e " -------------------------"; echo -e " ${GREEN}0. 开始部署${PLAIN}"
+    echo -e " ${GREEN}1.${PLAIN} 协议选择 (Protocols)"
+    echo -e " ${GREEN}2.${PLAIN} WARP 路由 (Route)"
+    echo -e " ${GREEN}3.${PLAIN} Argo 隧道 (Tunnel)"
+    echo -e " -------------------------"
+    echo -e " ${GREEN}0. 确认清单并开始部署${PLAIN}"
+    echo ""
     read -p "选项: " m
     case $m in
         1) menu_protocols ;;
         2) menu_warp ;;
         3) menu_argo ;;
-        0) deploy_logic; break ;;
+        0) 
+            if [[ "$INSTALL_SB" != "true" ]] && [[ "$INSTALL_XRAY" != "true" ]] && [[ "$INSTALL_ARGO" != "true" ]]; then
+                echo -e "${RED}购物车是空的！请先选择商品。${PLAIN}"; sleep 2
+            else
+                deploy_logic; break
+            fi
+            ;;
     esac
 done
