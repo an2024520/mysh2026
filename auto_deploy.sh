@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v6.4 Xray-Fix)
+#  Commander Auto-Deploy (v6.5 Final)
 #  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
-#  - 修正: Xray 自动部署时端口传递失效的问题
-#  - 集成: Argo Tunnel + Sing-box 后端联动
+#  - 新增协议: Xray VLESS + WS (Tunnel专用)
+#  - 修复: Xray 端口传递、WARP 路由自动分流
 # ============================================================
 
 # --- 基础定义 ---
@@ -70,7 +70,7 @@ deploy_logic() {
     echo -e "${GREEN}>>> 正在处理您的订单 (开始部署)...${PLAIN}"
     init_urls
     
-    # 蓄水池初始化
+    # 蓄水池初始化 (用于 WARP 指定节点分流)
     local SB_TAGS_ACC=""
     local XRAY_TAGS_ACC=""
 
@@ -99,6 +99,8 @@ deploy_logic() {
              export SB_WS_PORT="$VAR_SB_WS_TUNNEL_PORT"
              export SB_WS_PATH="$VAR_SB_WS_TUNNEL_PATH"
              run "sb_vless_ws_tunnel.sh"
+             # 清理环境变量，防止污染
+             unset SB_WS_PORT SB_WS_PATH
              SB_TAGS_ACC+="Tunnel-${VAR_SB_WS_TUNNEL_PORT},"
         fi
     fi
@@ -108,14 +110,25 @@ deploy_logic() {
         echo -e "${GREEN}>>> [Xray] 部署核心...${PLAIN}"
         run "xray_core.sh"
         
-        # [Fix] 明确导出 PORT 变量，确保子脚本能读取
+        # A. Vision Reality
         if [[ "$DEPLOY_XRAY_VISION" == "true" ]]; then
             echo -e "${GREEN}>>> [Xray] Vision 节点 (: ${VAR_XRAY_VISION_PORT})...${PLAIN}"
+            # Xray Vision 脚本使用 PORT 变量
             export PORT="$VAR_XRAY_VISION_PORT"
             run "xray_vless_vision_reality.sh"
-            # 用完最好 unset，防止干扰后续（虽然这里逻辑是线性的）
             unset PORT
             XRAY_TAGS_ACC+="Vision-${VAR_XRAY_VISION_PORT},"
+        fi
+
+        # B. WS Tunnel (新增)
+        if [[ "$DEPLOY_XRAY_WS_TUNNEL" == "true" ]]; then
+            echo -e "${GREEN}>>> [Xray] WS Tunnel 节点 (: ${VAR_XRAY_WS_TUNNEL_PORT})...${PLAIN}"
+            # 传递 Xray 专用变量
+            export XRAY_WS_PORT="$VAR_XRAY_WS_TUNNEL_PORT"
+            export XRAY_WS_PATH="$VAR_XRAY_WS_TUNNEL_PATH"
+            run "xray_vless_ws_tunnel.sh"
+            unset XRAY_WS_PORT XRAY_WS_PATH
+            XRAY_TAGS_ACC+="vless-ws-tunnel-${VAR_XRAY_WS_TUNNEL_PORT},"
         fi
     fi
 
@@ -136,7 +149,7 @@ deploy_logic() {
         fi
     fi
 
-    # === 4. Argo ===
+    # === 4. Argo (Tunnel) ===
     if [[ "$INSTALL_ARGO" == "true" ]]; then
         echo -e "${GREEN}>>> [Argo] 配置 Tunnel...${PLAIN}"
         run "install_cf_tunnel_debian.sh"
@@ -173,7 +186,8 @@ show_dashboard() {
     
     if [[ "$INSTALL_XRAY" == "true" ]]; then
         echo -e "${YELLOW}● Xray Core${PLAIN}"
-        [[ "$DEPLOY_XRAY_VISION" == "true" ]] && echo -e "  └─ Vision Reality  [Port: ${GREEN}$VAR_XRAY_VISION_PORT${PLAIN}]"
+        [[ "$DEPLOY_XRAY_VISION" == "true" ]]    && echo -e "  ├─ Vision Reality  [Port: ${GREEN}$VAR_XRAY_VISION_PORT${PLAIN}]"
+        [[ "$DEPLOY_XRAY_WS_TUNNEL" == "true" ]] && echo -e "  └─ VLESS WS Tunnel [Port: ${GREEN}$VAR_XRAY_WS_TUNNEL_PORT${PLAIN}]"
         has_item=true
     fi
 
@@ -216,6 +230,7 @@ menu_protocols() {
         echo -e " 1. [$(get_status $DEPLOY_SB_VISION)] Sing-box Vision Reality"
         echo -e " 2. [$(get_status $DEPLOY_XRAY_VISION)] Xray Vision Reality"
         echo -e " 3. [$(get_status $DEPLOY_SB_WS_TUNNEL)] Sing-box VLESS+WS (Tunnel)"
+        echo -e " 4. [$(get_status $DEPLOY_XRAY_WS_TUNNEL)] Xray VLESS+WS (Tunnel) ${YELLOW}(NEW)${PLAIN}"
         echo ""
         echo -e " 0. 返回"
         read -p "选择: " c
@@ -241,8 +256,24 @@ menu_protocols() {
                     DEPLOY_SB_WS_TUNNEL=true; INSTALL_SB=true
                     read -p "端口(8080): " p; VAR_SB_WS_TUNNEL_PORT="${p:-8080}"
                     read -p "Path(/ws): " pa; VAR_SB_WS_TUNNEL_PATH="${pa:-/ws}"
+                    # 自动推荐 Argo
                     if [[ "$INSTALL_ARGO" != "true" ]]; then
-                        echo -e "${YELLOW}提示: 建议同时开启 Argo Tunnel。${PLAIN}"
+                        echo -e "${YELLOW}提示: Tunnel 节点建议开启 Argo。${PLAIN}"
+                        INSTALL_ARGO=true
+                        read -p "Argo Token: " t; export ARGO_AUTH="$t"
+                        read -p "Argo Domain: " d; export ARGO_DOMAIN="$d"
+                    fi
+                fi ;;
+            4)
+                if [[ "$DEPLOY_XRAY_WS_TUNNEL" == "true" ]]; then
+                    DEPLOY_XRAY_WS_TUNNEL=false
+                else
+                    DEPLOY_XRAY_WS_TUNNEL=true; INSTALL_XRAY=true
+                    read -p "端口(8081): " p; VAR_XRAY_WS_TUNNEL_PORT="${p:-8081}"
+                    read -p "Path(/xr): " pa; VAR_XRAY_WS_TUNNEL_PATH="${pa:-/xr}"
+                    # 自动推荐 Argo
+                    if [[ "$INSTALL_ARGO" != "true" ]]; then
+                        echo -e "${YELLOW}提示: Tunnel 节点建议开启 Argo。${PLAIN}"
                         INSTALL_ARGO=true
                         read -p "Argo Token: " t; export ARGO_AUTH="$t"
                         read -p "Argo Domain: " d; export ARGO_DOMAIN="$d"
