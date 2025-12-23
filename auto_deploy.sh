@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v6.5 Final)
+#  Commander Auto-Deploy (v6.6 Tunnel-Protect)
 #  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
 #  - 新增协议: Xray VLESS + WS (Tunnel专用)
-#  - 修复: Xray 端口传递、WARP 路由自动分流
+#  - 修复: 智能跳过已运行的 Argo Tunnel，防止重复安装卡死
 # ============================================================
 
 # --- 基础定义 ---
@@ -99,7 +99,6 @@ deploy_logic() {
              export SB_WS_PORT="$VAR_SB_WS_TUNNEL_PORT"
              export SB_WS_PATH="$VAR_SB_WS_TUNNEL_PATH"
              run "sb_vless_ws_tunnel.sh"
-             # 清理环境变量，防止污染
              unset SB_WS_PORT SB_WS_PATH
              SB_TAGS_ACC+="Tunnel-${VAR_SB_WS_TUNNEL_PORT},"
         fi
@@ -113,7 +112,6 @@ deploy_logic() {
         # A. Vision Reality
         if [[ "$DEPLOY_XRAY_VISION" == "true" ]]; then
             echo -e "${GREEN}>>> [Xray] Vision 节点 (: ${VAR_XRAY_VISION_PORT})...${PLAIN}"
-            # Xray Vision 脚本使用 PORT 变量
             export PORT="$VAR_XRAY_VISION_PORT"
             run "xray_vless_vision_reality.sh"
             unset PORT
@@ -123,11 +121,11 @@ deploy_logic() {
         # B. WS Tunnel (新增)
         if [[ "$DEPLOY_XRAY_WS_TUNNEL" == "true" ]]; then
             echo -e "${GREEN}>>> [Xray] WS Tunnel 节点 (: ${VAR_XRAY_WS_TUNNEL_PORT})...${PLAIN}"
-            # 传递 Xray 专用变量
             export XRAY_WS_PORT="$VAR_XRAY_WS_TUNNEL_PORT"
             export XRAY_WS_PATH="$VAR_XRAY_WS_TUNNEL_PATH"
             run "xray_vless_ws_tunnel.sh"
             unset XRAY_WS_PORT XRAY_WS_PATH
+            # 注意: 此处 Tag 必须与脚本内部生成的 Tag 一致，方便后续 WARP 指定接管
             XRAY_TAGS_ACC+="vless-ws-tunnel-${VAR_XRAY_WS_TUNNEL_PORT},"
         fi
     fi
@@ -149,10 +147,16 @@ deploy_logic() {
         fi
     fi
 
-    # === 4. Argo (Tunnel) ===
+    # === 4. Argo (Tunnel) 增强逻辑 ===
     if [[ "$INSTALL_ARGO" == "true" ]]; then
-        echo -e "${GREEN}>>> [Argo] 配置 Tunnel...${PLAIN}"
-        run "install_cf_tunnel_debian.sh"
+        # [PRO 专家修复] 检查 cloudflared 是否已经作为服务在运行
+        if systemctl is-active --quiet cloudflared; then
+            echo -e "${SKYBLUE}>>> [检测] Cloudflare Tunnel 服务已在运行，跳过安装程序。${PLAIN}"
+            echo -e "${SKYBLUE}>>> [提示] 本次新增的节点已就绪。如需映射新端口，请手动更新 Tunnel 配置。${PLAIN}"
+        else
+            echo -e "${GREEN}>>> [Argo] 环境未就绪，开始配置 Tunnel...${PLAIN}"
+            run "install_cf_tunnel_debian.sh"
+        fi
     fi
 
     echo -e "${GREEN}>>> 所有任务执行完毕。${PLAIN}"
@@ -256,7 +260,6 @@ menu_protocols() {
                     DEPLOY_SB_WS_TUNNEL=true; INSTALL_SB=true
                     read -p "端口(8080): " p; VAR_SB_WS_TUNNEL_PORT="${p:-8080}"
                     read -p "Path(/ws): " pa; VAR_SB_WS_TUNNEL_PATH="${pa:-/ws}"
-                    # 自动推荐 Argo
                     if [[ "$INSTALL_ARGO" != "true" ]]; then
                         echo -e "${YELLOW}提示: Tunnel 节点建议开启 Argo。${PLAIN}"
                         INSTALL_ARGO=true
@@ -271,7 +274,6 @@ menu_protocols() {
                     DEPLOY_XRAY_WS_TUNNEL=true; INSTALL_XRAY=true
                     read -p "端口(8081): " p; VAR_XRAY_WS_TUNNEL_PORT="${p:-8081}"
                     read -p "Path(/xr): " pa; VAR_XRAY_WS_TUNNEL_PATH="${pa:-/xr}"
-                    # 自动推荐 Argo
                     if [[ "$INSTALL_ARGO" != "true" ]]; then
                         echo -e "${YELLOW}提示: Tunnel 节点建议开启 Argo。${PLAIN}"
                         INSTALL_ARGO=true
