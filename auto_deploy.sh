@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v6.6 Tunnel-Protect)
+#  Commander Auto-Deploy (v6.7 Full-Stack)
 #  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
-#  - 新增协议: Xray VLESS + WS (Tunnel专用)
-#  - 修复: 智能跳过已运行的 Argo Tunnel，防止重复安装卡死
+#  - 新增协议: Sing-box AnyTLS & Hysteria 2
+#  - 修复: 智能跳过已运行的 Argo Tunnel
 # ============================================================
 
 # --- 基础定义 ---
@@ -102,6 +102,20 @@ deploy_logic() {
              unset SB_WS_PORT SB_WS_PATH
              SB_TAGS_ACC+="Tunnel-${VAR_SB_WS_TUNNEL_PORT},"
         fi
+
+        # D. AnyTLS Reality (新增)
+        if [[ "$DEPLOY_SB_ANYTLS" == "true" ]]; then
+             echo -e "${GREEN}>>> [SB] AnyTLS 节点 (: ${VAR_SB_ANYTLS_PORT})...${PLAIN}"
+             PORT=$VAR_SB_ANYTLS_PORT run "sb_anytls_reality.sh"
+             SB_TAGS_ACC+="AnyTLS-${VAR_SB_ANYTLS_PORT},"
+        fi
+
+        # E. Hysteria 2 (新增)
+        if [[ "$DEPLOY_SB_HY2" == "true" ]]; then
+             echo -e "${GREEN}>>> [SB] Hysteria 2 节点 (: ${VAR_SB_HY2_PORT})...${PLAIN}"
+             PORT=$VAR_SB_HY2_PORT run "sb_hy2_self.sh"
+             SB_TAGS_ACC+="Hy2-Self-${VAR_SB_HY2_PORT},"
+        fi
     fi
 
     # === 2. Xray 体系 ===
@@ -118,14 +132,13 @@ deploy_logic() {
             XRAY_TAGS_ACC+="Vision-${VAR_XRAY_VISION_PORT},"
         fi
 
-        # B. WS Tunnel (新增)
+        # B. WS Tunnel
         if [[ "$DEPLOY_XRAY_WS_TUNNEL" == "true" ]]; then
             echo -e "${GREEN}>>> [Xray] WS Tunnel 节点 (: ${VAR_XRAY_WS_TUNNEL_PORT})...${PLAIN}"
             export XRAY_WS_PORT="$VAR_XRAY_WS_TUNNEL_PORT"
             export XRAY_WS_PATH="$VAR_XRAY_WS_TUNNEL_PATH"
             run "xray_vless_ws_tunnel.sh"
             unset XRAY_WS_PORT XRAY_WS_PATH
-            # 注意: 此处 Tag 必须与脚本内部生成的 Tag 一致，方便后续 WARP 指定接管
             XRAY_TAGS_ACC+="vless-ws-tunnel-${VAR_XRAY_WS_TUNNEL_PORT},"
         fi
     fi
@@ -149,7 +162,6 @@ deploy_logic() {
 
     # === 4. Argo (Tunnel) 增强逻辑 ===
     if [[ "$INSTALL_ARGO" == "true" ]]; then
-        # [PRO 专家修复] 检查 cloudflared 是否已经作为服务在运行
         if systemctl is-active --quiet cloudflared; then
             echo -e "${SKYBLUE}>>> [检测] Cloudflare Tunnel 服务已在运行，跳过安装程序。${PLAIN}"
             echo -e "${SKYBLUE}>>> [提示] 本次新增的节点已就绪。如需映射新端口，请手动更新 Tunnel 配置。${PLAIN}"
@@ -184,7 +196,9 @@ show_dashboard() {
         echo -e "${YELLOW}● Sing-box Core${PLAIN}"
         [[ "$DEPLOY_SB_VISION" == "true" ]]     && echo -e "  ├─ Vision Reality  [Port: ${GREEN}$VAR_SB_VISION_PORT${PLAIN}]"
         [[ "$DEPLOY_SB_WS" == "true" ]]         && echo -e "  ├─ VLESS WS TLS    [Port: ${GREEN}$VAR_SB_WS_PORT${PLAIN}]"
-        [[ "$DEPLOY_SB_WS_TUNNEL" == "true" ]]  && echo -e "  └─ VLESS WS Tunnel [Port: ${GREEN}$VAR_SB_WS_TUNNEL_PORT${PLAIN}]"
+        [[ "$DEPLOY_SB_WS_TUNNEL" == "true" ]]  && echo -e "  ├─ VLESS WS Tunnel [Port: ${GREEN}$VAR_SB_WS_TUNNEL_PORT${PLAIN}]"
+        [[ "$DEPLOY_SB_ANYTLS" == "true" ]]     && echo -e "  ├─ AnyTLS Reality  [Port: ${GREEN}$VAR_SB_ANYTLS_PORT${PLAIN}]"
+        [[ "$DEPLOY_SB_HY2" == "true" ]]        && echo -e "  └─ Hysteria 2      [Port: ${GREEN}$VAR_SB_HY2_PORT${PLAIN}]"
         has_item=true
     fi
     
@@ -234,7 +248,9 @@ menu_protocols() {
         echo -e " 1. [$(get_status $DEPLOY_SB_VISION)] Sing-box Vision Reality"
         echo -e " 2. [$(get_status $DEPLOY_XRAY_VISION)] Xray Vision Reality"
         echo -e " 3. [$(get_status $DEPLOY_SB_WS_TUNNEL)] Sing-box VLESS+WS (Tunnel)"
-        echo -e " 4. [$(get_status $DEPLOY_XRAY_WS_TUNNEL)] Xray VLESS+WS (Tunnel) ${YELLOW}(NEW)${PLAIN}"
+        echo -e " 4. [$(get_status $DEPLOY_XRAY_WS_TUNNEL)] Xray VLESS+WS (Tunnel)"
+        echo -e " 5. [$(get_status $DEPLOY_SB_ANYTLS)] Sing-box AnyTLS Reality"
+        echo -e " 6. [$(get_status $DEPLOY_SB_HY2)] Sing-box Hysteria 2"
         echo ""
         echo -e " 0. 返回"
         read -p "选择: " c
@@ -280,6 +296,20 @@ menu_protocols() {
                         read -p "Argo Token: " t; export ARGO_AUTH="$t"
                         read -p "Argo Domain: " d; export ARGO_DOMAIN="$d"
                     fi
+                fi ;;
+            5)
+                if [[ "$DEPLOY_SB_ANYTLS" == "true" ]]; then
+                    DEPLOY_SB_ANYTLS=false
+                else
+                    DEPLOY_SB_ANYTLS=true; INSTALL_SB=true
+                    read -p "端口(8443): " p; VAR_SB_ANYTLS_PORT="${p:-8443}"
+                fi ;;
+            6)
+                if [[ "$DEPLOY_SB_HY2" == "true" ]]; then
+                    DEPLOY_SB_HY2=false
+                else
+                    DEPLOY_SB_HY2=true; INSTALL_SB=true
+                    read -p "UDP端口(10086): " p; VAR_SB_HY2_PORT="${p:-10086}"
                 fi ;;
             0) break ;;
         esac
