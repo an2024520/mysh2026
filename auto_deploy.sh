@@ -1,8 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v6.0 Final Refined)
+#  Commander Auto-Deploy (v6.1 WARP-Modes-Complete)
 #  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
-#  - 新增特性: 目录自清理 (保护 menu.sh) | 智能联动 | 极简仪表盘
+#  - 修正: 目录清理逻辑简化 (只保留自身)
+#  - 新增: WARP 双栈全局模式 & 纯流媒体模式
 # ============================================================
 
 # --- 基础定义 ---
@@ -16,31 +17,29 @@ URL_LIST="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_ur
 LOCAL_LIST="/tmp/sh_url.txt"
 
 # ============================================================
-#  0. 环境预处理 (借鉴 menu.sh 优良习惯)
+#  0. 环境预处理 (Check Dir Clean)
 # ============================================================
 
 check_dir_clean() {
-    # 只在交互模式下询问，如果是纯自动模式(外部变量传入)则默认清理或跳过
-    # 这里保持与 menu.sh 一致的交互逻辑
+    # 既然是一键脚本运行，为了环境纯净，除自身外全部清理
     local current_script=$(basename "$0")
-    # 排除列表: 自己, menu.sh, git目录, 配置文件
-    local count=$(ls -1 | grep -vE "^($current_script|menu.sh|sh_url.txt|README.md|.git|.gitignore)$" | wc -l)
+    # 排除自身
+    local count=$(ls -1 | grep -v "^$current_script$" | wc -l)
     
     if [[ "$count" -gt 0 ]]; then
         clear
         echo -e "${YELLOW}======================================================${PLAIN}"
         echo -e "${YELLOW} 检测到目录下存在 $count 个旧文件/脚本。${PLAIN}"
-        echo -e "${GRAY} 为了确保您使用的是最新版本的组件，建议清理旧文件。${PLAIN}"
-        echo -e "${GRAY} (已自动保护 menu.sh 和 auto_deploy.sh 不会被删除)${PLAIN}"
+        echo -e "${GRAY} 为了确保安装环境纯净，建议执行清理。${PLAIN}"
         echo -e "${YELLOW}======================================================${PLAIN}"
         echo -e ""
-        read -p "是否清理旧文件? (y/n, 默认 y): " clean_opt
+        read -p "是否清空目录并强制更新? (y/n, 默认 y): " clean_opt
         clean_opt=${clean_opt:-y}
 
         if [[ "$clean_opt" == "y" ]]; then
-            echo -e "${YELLOW}正在清理...${PLAIN}"
-            # 这里的 grep -vE 确保了“双轨制”的另一套系统不会被误删
-            ls | grep -vE "^($current_script|menu.sh|sh_url.txt|README.md|.git|.gitignore)$" | xargs rm -rf
+            echo -e "${YELLOW}正在清理旧文件...${PLAIN}"
+            # 简单粗暴：排除脚本自身，其余全删
+            ls | grep -v "^$current_script$" | xargs rm -rf
             echo -e "${GREEN}清理完成。${PLAIN}"; sleep 1
         fi
     fi
@@ -149,7 +148,6 @@ show_dashboard() {
     echo -e "${SKYBLUE}       Commander 选购清单 (Auto Mode)      ${PLAIN}"
     echo -e "${SKYBLUE}==============================================${PLAIN}"
     
-    # --- 极简风格仪表盘 ---
     local has_item=false
 
     # 1. 核心与节点
@@ -173,6 +171,8 @@ show_dashboard() {
             1) mode_str="IPv4 优先" ;;
             2) mode_str="IPv6 优先" ;;
             3) mode_str="指定节点接管" ;;
+            4) mode_str="双栈全局接管" ;;
+            5) mode_str="仅流媒体分流" ;;
         esac
         local acc_str="自动注册"
         [[ -n "$WARP_PRIV_KEY" ]] && acc_str="自备账号"
@@ -200,7 +200,6 @@ show_dashboard() {
 menu_protocols() {
     while true; do
         clear; echo -e "${SKYBLUE}=== 协议选择 ===${PLAIN}"
-        # 使用更直观的开关显示
         echo -e " 1. [$(get_status $DEPLOY_SB_VISION)] Sing-box Vision"
         echo -e " 2. [$(get_status $DEPLOY_XRAY_VISION)] Xray Vision"
         echo ""
@@ -210,7 +209,6 @@ menu_protocols() {
             1) 
                 if [[ "$DEPLOY_SB_VISION" == "true" ]]; then 
                     DEPLOY_SB_VISION=false
-                    # 简单检查：如果关了唯一的SB节点，是否要关核心？(暂不处理，保持简单)
                 else 
                     DEPLOY_SB_VISION=true; INSTALL_SB=true
                     read -p "端口(443): " p; VAR_SB_VISION_PORT="${p:-443}"
@@ -236,15 +234,14 @@ menu_warp() {
         echo ""
         echo -e " 1. 启用/配置 WARP 账号"
         echo -e " 2. 选择分流模式"
-        echo -e " 3. ${RED}清空 WARP 购物车 (Disable)${PLAIN}"
+        echo -e " 3. ${RED}清空 WARP 购物车 (Remove)${PLAIN}"
         echo ""
         echo -e " 0. 返回"
         read -p "选择: " w
         case $w in
             1)
                 INSTALL_WARP=true
-                # 默认模式兜底
-                [[ -z "$WARP_MODE_SELECT" ]] && WARP_MODE_SELECT=1
+                [[ -z "$WARP_MODE_SELECT" ]] && WARP_MODE_SELECT=5 # 默认选流媒体
                 echo -e "   1. 自动注册 (默认)"
                 echo -e "   2. 手动录入 (私钥/IPv6/Reserved)"
                 read -p "   选择: " acc
@@ -257,13 +254,14 @@ menu_warp() {
                 fi
                 ;;
             2)
-                # 联动逻辑：选模式 = 启用
                 INSTALL_WARP=true
                 echo -e "   1. IPv4 优先 (全局 IPv4 流量走 WARP)"
                 echo -e "   2. IPv6 优先 (全局 IPv6 流量走 WARP)"
                 echo -e "   3. 指定节点接管 (仅选中的节点出口走 WARP)"
-                read -p "   选择模式 (1-3): " m
-                if [[ "$m" =~ ^[1-3]$ ]]; then export WARP_MODE_SELECT="$m"; fi
+                echo -e "   4. 双栈全局接管 (所有流量走 WARP)"
+                echo -e "   5. 仅流媒体分流 (默认)"
+                read -p "   选择模式 (1-5): " m
+                if [[ "$m" =~ ^[1-5]$ ]]; then export WARP_MODE_SELECT="$m"; fi
                 ;;
             3)
                 INSTALL_WARP=false
@@ -295,13 +293,11 @@ menu_argo() {
 # --- 主循环 ---
 export AUTO_SETUP=true
 
-# 0. 启动清理检查 (交互)
+# 0. 启动清理检查 (交互模式下)
 if [[ -z "$INSTALL_SB" ]] && [[ -z "$INSTALL_XRAY" ]]; then
-    # 只有在没有外部变量传入(即手动运行auto_deploy)时才执行清理检查
     check_dir_clean
 fi
 
-# 判断高级模式
 if [[ -n "$INSTALL_SB" ]] || [[ -n "$INSTALL_XRAY" ]] || [[ -n "$INSTALL_ARGO" ]]; then
     deploy_logic; exit 0
 fi
