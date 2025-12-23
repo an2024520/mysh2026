@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (v2.6 Endpoints-Corrected)
-#  - 确认: WireGuard 配置在 .endpoints (Sing-box 1.10+ 标准)
-#  - 修复: 路由规则应用前强制清理旧规则，防止堆叠
-#  - 自动化: 适配 V6 架构
+#  Sing-box Native WARP 管理模块 (v2.7 Strict-Spec)
+#  - 规范适配: 严格遵循 Sing-box 1.10+ Endpoints 规范
+#  - 字段修正: peers 内使用 address/port 替代 server/server_port
+#  - 修复: 路由规则应用前强制清理旧规则
 # ============================================================
 
 RED='\033[0;31m'
@@ -51,7 +51,7 @@ restart_sb() {
 }
 
 # ==========================================
-# 2. 核心写入与配置
+# 2. 核心写入与配置 (Strict Fix)
 # ==========================================
 
 save_credentials() {
@@ -67,6 +67,7 @@ EOF
 write_warp_config() {
     local priv="$1" pub="$2" v4="$3" v6="$4" res="$5"
     
+    # 补全掩码
     [[ ! "$v4" =~ "/" && -n "$v4" && "$v4" != "null" ]] && v4="${v4}/32"
     [[ ! "$v6" =~ "/" && -n "$v6" && "$v6" != "null" ]] && v6="${v6}/128"
     
@@ -74,7 +75,9 @@ write_warp_config() {
     [[ -n "$v4" && "$v4" != "null" ]] && addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]')
     [[ -n "$v6" && "$v6" != "null" ]] && addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]')
     
-    # [Correct] 写入 .endpoints (System Interface)
+    # [Strict Fix] 严格匹配 Sing-box 1.10+ Endpoints 规范
+    # 1. 位置: .endpoints
+    # 2. Peers 字段: 使用 address 和 port (而非 server/server_port)
     local warp_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -88,8 +91,8 @@ write_warp_config() {
             "private_key": $priv,
             "peers": [
                 {
-                    "server": "2606:4700:d0::a29f:c001", 
-                    "server_port": 2408, 
+                    "address": "2606:4700:d0::a29f:c001", 
+                    "port": 2408, 
                     "public_key": $pub, 
                     "reserved": $res,
                     "allowed_ips": ["0.0.0.0/0", "::/0"]
@@ -114,7 +117,7 @@ write_warp_config() {
     restart_sb
 }
 
-# [占位] 注册与录入函数保持不变
+# --- 注册函数 (保持不变) ---
 register_warp() {
     ensure_python || return 1
     echo -e "${YELLOW}正在注册免费账号...${PLAIN}"
@@ -143,6 +146,7 @@ register_warp() {
     write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
 }
 
+# --- 手动录入函数 (保持不变) ---
 manual_warp() {
     local def_priv="" def_pub="" def_v4="" def_v6="" def_res=""
     if [[ -f "$CRED_FILE" ]]; then
@@ -198,8 +202,15 @@ clean_reserved() {
     [[ -n "$nums" ]] && echo "[$nums]" || echo ""
 }
 
+base64_to_reserved_shell() {
+    local input="$1"
+    local bytes=$(echo "$input" | base64 -d 2>/dev/null | od -An -t u1 | tr -s ' ' ',')
+    bytes=$(echo "$bytes" | sed 's/^,//;s/,$//;s/ //g')
+    [[ -n "$bytes" ]] && echo "[$bytes]" || echo ""
+}
+
 # ==========================================
-# 3. 路由管理 (关键修复)
+# 3. 路由管理
 # ==========================================
 
 ensure_warp_exists() {
@@ -214,10 +225,10 @@ apply_routing_rule() {
     echo -e "${YELLOW}正在应用路由规则...${PLAIN}"
     local TMP_CONF=$(mktemp)
     
-    # [Fix] 先清理所有旧的 WARP 规则 (outbound 为 WARP 的规则)
+    # [Fix] 先清理所有旧的 WARP 规则
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     
-    # [Fix] 插入新规则到最前 (高优先级)
+    # [Fix] 插入新规则到最前
     jq --argjson r "$rule_json" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
@@ -236,8 +247,7 @@ mode_stream() {
 
 mode_global() {
     ensure_warp_exists || return
-
-    echo -e "${YELLOW}>>> 警告: 全局模式将改变路由默认出口 (Final) <<<${PLAIN}"
+    echo -e "${YELLOW}>>> 警告: 全局模式将改变路由默认出口 <<<${PLAIN}"
     echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全局 (默认)"
     read -p "选择: " sub
     
@@ -250,7 +260,6 @@ mode_global() {
         b) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }') ;;
         *) rule=$(jq -n '{ "outbound": "WARP" }') ;;
     esac
-    
     apply_routing_rule "$rule"
 }
 
