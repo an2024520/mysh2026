@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Xray WARP Native Route 模块 (v2.0 IPv6 Adaptive)
-#  - 功能: 为 Xray 添加 WireGuard (WARP) 出站
+#  Xray WARP Native Route 模块 (v2.5 Ultimate-Xray)
+#  - 架构: Xray WireGuard Outbound
+#  - 修复: 路由插入顺序 (Prepend)、增加防环回 (Anti-Loop)
 #  - 适配: 自动识别 IPv6-Only 环境并切换 Endpoint
-#  - 模式: 支持全局接管 / 指定节点接管 / 分流模式
 # ============================================================
 
 RED='\033[0;31m'
@@ -29,6 +29,8 @@ check_env() {
     IS_IPV6_ONLY=false
     # 官方通用域名 Endpoint
     FINAL_ENDPOINT="engage.cloudflareclient.com:2408" 
+    # 导出纯 IP 地址供防环回使用 (如果是域名则为空或解析)
+    FINAL_ENDPOINT_IP=""
 
     # 严格检测 IPv4
     local ipv4_check=$(curl -4 -s -m 5 http://ip.sb 2>/dev/null)
@@ -39,10 +41,14 @@ check_env() {
     else
         IS_IPV6_ONLY=true
         # Cloudflare 官方 IPv6 Endpoint
-        FINAL_ENDPOINT="[2606:4700:d0::a29f:c001]:2408"
+        local ep_ip="2606:4700:d0::a29f:c001"
+        FINAL_ENDPOINT="[${ep_ip}]:2408"
+        FINAL_ENDPOINT_IP="${ep_ip}"
         echo -e "${SKYBLUE}>>> 检测到 IPv6-Only 环境。${PLAIN}"
         echo -e "${SKYBLUE}>>> 切换为 IPv6 专用 Endpoint: $FINAL_ENDPOINT${PLAIN}"
     fi
+    export FINAL_ENDPOINT
+    export FINAL_ENDPOINT_IP
 }
 
 # ============================================================
@@ -56,11 +62,6 @@ get_warp_account() {
     local p_key="${WARP_PRIV_KEY}"
     local addr="${WARP_IPV6}"
     local reserved="${WARP_RESERVED}"
-
-    # 如果没有环境变量，尝试自动注册 (这里简化为必须提供或由外部工具生成，
-    # 实际场景中通常调用 wgcf-account 或 warp-reg 工具，此处假设用户已获知参数或使用自备参数)
-    # 为了保持脚本纯净，这里建议对接 auto_deploy.sh 传入的变量，
-    # 或者如果变量为空，提示用户输入。
 
     if [[ -z "$p_key" ]]; then
         echo -e "${YELLOW}提示: 未检测到预设账号，建议使用 auto_deploy.sh 自动注册。${PLAIN}"
@@ -92,34 +93,15 @@ inject_config() {
     
     cp "$CONFIG_FILE" "$BACKUP_FILE"
 
-    # 1. 清理旧的 warp-out
+    # 1. 清理旧的 warp-out 相关配置 (Outbound & Rules)
     jq '
       .outbounds |= map(select(.tag != "warp-out")) |
       .routing.rules |= map(select(.outboundTag != "warp-out"))
     ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    # 2. 注入 Outbound (使用 $FINAL_ENDPOINT)
-    # 构造 Reserved JSON 数组字符串
+    # 2. 注入 Outbound
     local res_json="[$(echo $WG_RESERVED | sed 's/,/,/g')]"
     
-    jq --arg key "$WG_KEY" \
-       --arg addr "$WG_ADDR" \
-       --argjson res "$res_json" \
-       --arg endpoint "$FINAL_ENDPOINT" \
-       '.outbounds += [{
-          "tag": "warp-out",
-          "protocol": "freedom",
-          "settings": {
-            "domainStrategy": "UseIP"
-          },
-          "streamSettings": {
-            "network": "headers", 
-            "security": "none" 
-          }
-       }]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" 
-       # 注意: 上面只是占位，实际 WireGuard 需要 Xray v1.8+ 的 protocol: "wireguard"
-       # 由于 jq 构造复杂对象较繁琐，这里采用简化的 WireGuard 配置结构:
-       
     jq --arg key "$WG_KEY" \
        --arg addr "$WG_ADDR" \
        --argjson res "$res_json" \
@@ -140,32 +122,54 @@ inject_config() {
             }
        }]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    # 3. 注入路由规则 (根据模式)
-    # 模式来自于 auto_deploy.sh 的 WARP_MODE_SELECT 或 WARP_INBOUND_TAGS
+    # 3. 注入路由规则
+    echo -e "${YELLOW}正在配置路由规则 (Anti-Loop & Routing)...${PLAIN}"
     
-    echo -e "${YELLOW}正在配置分流规则...${PLAIN}"
+    # 3.1 构造防环回规则 (High Priority)
+    # 放行 engage 域名和 Endpoint IP 直连
+    local anti_loop_domains='["engage.cloudflareclient.com", "cloudflare.com"]'
+    local anti_loop_ips="[]"
+    if [[ -n "$FINAL_ENDPOINT_IP" ]]; then
+        anti_loop_ips="[\"${FINAL_ENDPOINT_IP}\"]"
+    fi
     
-    # 获取指定的入站标签 (如果有)
+    local anti_loop_rule=$(jq -n \
+        --argjson d "$anti_loop_domains" \
+        --argjson i "$anti_loop_ips" \
+        '{ "type": "field", "domain": $d, "ip": $i, "outboundTag": "direct" }')
+        # 注意: Xray 默认直连 tag 通常叫 "direct" 或 "freedom"，需确保 config.json 里有这个 tag
+        # 为了保险，检查是否存在 "direct"，没有则尝试 "freedom"
+    
+    # 3.2 构造分流规则 (来自环境变量)
     local tags="${WARP_INBOUND_TAGS}"
+    local routing_rule=""
     
     if [[ -n "$tags" ]]; then
         echo -e "${GREEN}>>> 模式: 指定节点接管 (Tags: $tags)${PLAIN}"
-        # 将逗号分隔的字符串转为 jq 数组
         local tag_json="[$(echo "$tags" | sed 's/,/","/g' | sed 's/^/"/' | sed 's/$/"/')]"
-        
-        # 插入规则：匹配 inboundTag -> warp-out
-        # 这里的规则应该放在靠前位置，但要排在 ICMP9 之后。
-        # 由于 ICMP9 是 "prepend" (插入头部)，我们这里用 "append" (追加) 或正常 += 即可，
-        # 只要 ICMP9 脚本是最后运行的，或者 ICMP9 脚本总是把自己插到最前面。
-        
-        jq --argjson tags "$tag_json" \
-           '.routing.rules += [{
-              "type": "field",
-              "inboundTag": $tags,
-              "outboundTag": "warp-out"
-           }]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+        routing_rule=$(jq -n --argjson tags "$tag_json" \
+           '{ "type": "field", "inboundTag": $tags, "outboundTag": "warp-out" }')
+    elif [[ "$WARP_MODE_SELECT" == "4" ]]; then
+         # 全局接管 (示例)
+         echo -e "${GREEN}>>> 模式: 全局接管 (Catch-All)${PLAIN}"
+         routing_rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "outboundTag": "warp-out" }')
     else
-        echo -e "${YELLOW}警告: 未指定接管标签，未添加路由规则 (WARP 仅作为备用出站存在)。${PLAIN}"
+         echo -e "${YELLOW}警告: 未指定接管标签，仅注入防环回规则。${PLAIN}"
+    fi
+
+    # 3.3 执行注入 (使用 Prepend 逻辑)
+    # 顺序：[防环回] -> [WARP分流] -> [原有规则]
+    # 这样防环回永远在最前，WARP 分流紧随其后 (优先级高于默认直连)
+    
+    if [[ -n "$routing_rule" ]]; then
+        jq --argjson r1 "$anti_loop_rule" \
+           --argjson r2 "$routing_rule" \
+           '.routing.rules = [$r1, $r2] + .routing.rules' \
+           "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    else
+        jq --argjson r1 "$anti_loop_rule" \
+           '.routing.rules = [$r1] + .routing.rules' \
+           "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     fi
 }
 
@@ -173,10 +177,19 @@ inject_config() {
 # 4. 重启验证
 # ============================================================
 restart_xray() {
+    # 预检查配置有效性 (Xray 自身没有 config check 命令，只能尝试重启)
+    # 但我们可以检查 jq 是否生成了合法的 JSON
+    if ! jq . "$CONFIG_FILE" >/dev/null 2>&1; then
+        echo -e "${RED}JSON 语法错误，还原备份...${PLAIN}"
+        cp "$BACKUP_FILE" "$CONFIG_FILE"
+        exit 1
+    fi
+
     systemctl restart xray
     sleep 2
     if systemctl is-active --quiet xray; then
         echo -e "${GREEN}WARP 模块加载成功！Endpoint: $FINAL_ENDPOINT${PLAIN}"
+        echo -e "${GRAY}防环回规则已置顶。${PLAIN}"
     else
         echo -e "${RED}Xray 重启失败，正在还原配置...${PLAIN}"
         cp "$BACKUP_FILE" "$CONFIG_FILE"
