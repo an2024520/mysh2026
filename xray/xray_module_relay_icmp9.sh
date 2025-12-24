@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  ICMP9 中转扩展模块 (PRO: Multi-User Routing)
-#  - 核心修复: 解决同端口多路径监听导致的端口冲突崩溃问题
-#  - 实现原理: 单端口(WS) + 多用户(UUID) -> 动态路由分流
+#  ICMP9 中转扩展模块 (v3.0 Final Perfect Edition)
+#  - 架构: 端口锚定 -> 协议自适应 -> 增量注入
+#  - 兼容: VLESS / VMess + WS (Argo Tunnel)
+#  - 修复: 彻底解决 clients/users 字段错位问题
 # ============================================================
 
 RED='\033[0;31m'
@@ -11,6 +12,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
+GRAY='\033[0;37m'
 
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
@@ -20,40 +22,76 @@ API_NODES="https://api.icmp9.com/online.php"
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 用户运行此脚本！${PLAIN}" && exit 1
 
 # ============================================================
-# 1. 智能提取现有配置
+# 1. 端口锚定与环境检测
 # ============================================================
 check_env() {
-    echo -e "${YELLOW}>>> [自检] 正在扫描现有 Tunnel 节点...${PLAIN}"
+    echo -e "${YELLOW}>>> [自检] 正在扫描本地节点...${PLAIN}"
     
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo -e "${RED}错误: 未找到 Xray 配置文件，请先部署 VLESS+WS 隧道。${PLAIN}"; exit 1
+        echo -e "${RED}错误: 未找到 Xray 配置文件 ($CONFIG_FILE)${PLAIN}"; exit 1
     fi
 
-    # 提取监听 127.0.0.1 的 VLESS+WS 节点信息
-    # 我们需要获取它的: 端口, 路径, 和原始配置块的索引
-    TARGET_INDEX=$(jq -r '
-        .inbounds | to_entries | map(select(.value.listen == "127.0.0.1" and .value.streamSettings.network == "ws")) | .[0].key
+    # --- A. 获取目标端口 ---
+    if [[ "$AUTO_SETUP" == "true" ]] && [[ -n "$ICMP9_PORT" ]]; then
+        # 自动模式: 接收外部传参
+        LOCAL_PORT="$ICMP9_PORT"
+        echo -e "${GREEN}>>> [自动模式] 锁定端口: ${SKYBLUE}$LOCAL_PORT${PLAIN}"
+    else
+        # 手动模式: 交互输入
+        echo -e "${SKYBLUE}请指定需要衔接 ICMP9 的本地节点端口 (Tunnel Port):${PLAIN}"
+        echo -e "${GRAY}* 该节点通常监听 127.0.0.1，用于 Argo 隧道回源${PLAIN}"
+        while true; do
+            read -p "请输入端口 (默认 8080): " input_port
+            LOCAL_PORT=${input_port:-8080}
+            if [[ "$LOCAL_PORT" =~ ^[0-9]+$ ]] && [ "$LOCAL_PORT" -le 65535 ]; then
+                break
+            else
+                echo -e "${RED}无效端口，请重新输入。${PLAIN}"
+            fi
+        done
+    fi
+
+    # --- B. 精准锚定节点 ---
+    # 使用 jq 根据端口查找节点的索引 (Index)
+    TARGET_INDEX=$(jq -r --argjson p "$LOCAL_PORT" '
+        .inbounds | to_entries | 
+        map(select(.value.port == $p)) | 
+        .[0].key
     ' "$CONFIG_FILE")
 
-    if [[ "$TARGET_INDEX" == "null" ]]; then
-        echo -e "${RED}错误: 未自动识别到本地监听的 WS 隧道节点。${PLAIN}"
-        read -p "请确认是否手动继续? (y/n): " c
-        [[ "$c" != "y" ]] && exit 1
-        # 手动兜底逻辑暂略，建议用户先跑通隧道
+    if [[ "$TARGET_INDEX" == "null" || -z "$TARGET_INDEX" ]]; then
+        echo -e "${RED}错误: 在配置文件中未找到监听端口为 $LOCAL_PORT 的节点！${PLAIN}"
+        echo -e "${GRAY}请检查端口是否正确，或先运行部署脚本生成节点。${PLAIN}"
         exit 1
     fi
 
-    # 提取关键参数供后续使用
-    LOCAL_PORT=$(jq -r ".inbounds[$TARGET_INDEX].port" "$CONFIG_FILE")
-    # 提取现有路径 (如果为空则默认为 /)
+    # --- C. 提取关键信息用于验证 ---
+    LOCAL_PROTO=$(jq -r ".inbounds[$TARGET_INDEX].protocol" "$CONFIG_FILE")
     LOCAL_PATH=$(jq -r ".inbounds[$TARGET_INDEX].streamSettings.wsSettings.path // \"/\"" "$CONFIG_FILE")
-    
-    echo -e "${GREEN}>>> 锁定目标节点:${PLAIN}"
-    echo -e "    索引: [${TARGET_INDEX}] | 端口: ${LOCAL_PORT} | 路径: ${LOCAL_PATH}"
+    LOCAL_LISTEN=$(jq -r ".inbounds[$TARGET_INDEX].listen" "$CONFIG_FILE")
 
-    # 严格 IPv6 检测
+    echo -e "${GREEN}>>> 节点锁定成功:${PLAIN}"
+    echo -e "    索引: [${TARGET_INDEX}]"
+    echo -e "    协议: ${SKYBLUE}${LOCAL_PROTO}${PLAIN}"
+    echo -e "    路径: ${SKYBLUE}${LOCAL_PATH}${PLAIN}"
+    echo -e "    监听: ${YELLOW}${LOCAL_LISTEN}${PLAIN}"
+
+    # 安全警告
+    if [[ "$LOCAL_LISTEN" != "127.0.0.1" ]]; then
+        echo -e "${RED}警告: 该节点未监听在 127.0.0.1，可能会暴露在公网！${PLAIN}"
+        if [[ "$AUTO_SETUP" != "true" ]]; then
+            read -p "是否继续? (y/n): " confirm
+            [[ "$confirm" != "y" ]] && exit 1
+        fi
+    fi
+    
+    # 验证协议支持
+    if [[ "$LOCAL_PROTO" != "vless" ]] && [[ "$LOCAL_PROTO" != "vmess" ]]; then
+        echo -e "${RED}错误: 不支持协议 $LOCAL_PROTO (仅支持 vless 或 vmess)${PLAIN}"; exit 1
+    fi
+    
+    # IPv6 DNS 优化
     if ! curl -4 -s -m 5 http://ip.sb >/dev/null; then
-        echo -e "${YELLOW}>>> 优化 IPv6 DNS...${PLAIN}"
         if ! grep -q "2001:4860:4860::8888" /etc/resolv.conf; then
             chattr -i /etc/resolv.conf
             echo -e "nameserver 2001:4860:4860::8888\nnameserver 2606:4700:4700::1111" > /etc/resolv.conf
@@ -63,26 +101,42 @@ check_env() {
 }
 
 get_user_input() {
-    echo -e "----------------------------------------------------"
-    while true; do
-        read -p "请输入 ICMP9 授权 KEY (UUID): " REMOTE_UUID
-        if [[ -n "$REMOTE_UUID" ]]; then break; fi
-    done
+    if [[ "$AUTO_SETUP" == "true" ]] && [[ -n "$ICMP9_KEY" ]]; then
+        REMOTE_UUID="$ICMP9_KEY"
+    else
+        echo -e "----------------------------------------------------"
+        while true; do
+            read -p "请输入 ICMP9 授权 KEY (UUID): " REMOTE_UUID
+            if [[ -n "$REMOTE_UUID" ]]; then break; fi
+        done
+    fi
+    
     DEFAULT_DOMAIN=${ARGO_DOMAIN}
-    read -p "请输入 Argo 隧道域名 (默认为 $DEFAULT_DOMAIN): " ARGO_DOMAIN
-    ARGO_DOMAIN=${ARGO_DOMAIN:-$DEFAULT_DOMAIN}
+    if [[ -z "$ARGO_DOMAIN" ]]; then
+         read -p "请输入 Argo 隧道域名 (用于生成链接): " ARGO_DOMAIN
+    fi
     [[ -z "$ARGO_DOMAIN" ]] && echo -e "${RED}域名不能为空！${PLAIN}" && exit 1
 }
 
 # ============================================================
-# 2. 核心注入逻辑 (UUID 分流架构)
+# 2. 核心注入逻辑 (动态适配 VLESS/VMess)
 # ============================================================
 inject_config() {
     echo -e "${YELLOW}>>> [配置] 获取节点数据与重构路由...${PLAIN}"
     
+    # --- 1. 确定协议对应的字段名 ---
+    # VLESS 用 clients, VMess 用 users
+    if [[ "$LOCAL_PROTO" == "vmess" ]]; then
+        USER_FIELD="users"
+        echo -e "${YELLOW}>>> 识别为 VMess 协议，操作字段: settings.users${PLAIN}"
+    else
+        USER_FIELD="clients"
+        echo -e "${YELLOW}>>> 识别为 VLESS 协议，操作字段: settings.clients${PLAIN}"
+    fi
+
     NODES_JSON=$(curl -s "$API_NODES")
     if ! echo "$NODES_JSON" | jq -e . >/dev/null 2>&1; then
-         echo -e "${RED}错误: API 请求失败。${PLAIN}"; exit 1
+         echo -e "${RED}错误: API 请求失败，请检查 KEY 或网络。${PLAIN}"; exit 1
     fi
     
     RAW_CFG=$(curl -s "$API_CONFIG")
@@ -93,39 +147,36 @@ inject_config() {
 
     cp "$CONFIG_FILE" "$BACKUP_FILE"
 
-    # 1. 清理旧 ICMP9 出站和规则
+    # --- 2. 清理旧 ICMP9 出站和规则 ---
     jq '
       .outbounds |= map(select(.tag | startswith("icmp9-") | not)) |
       .routing.rules |= map(select(.outboundTag | startswith("icmp9-") | not))
     ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    # 2. 准备新的客户列表 (Clients) 和其他配置
-    # 先保留原有的第一个用户 (作为默认回落或直连用户)
-    EXISTING_CLIENTS=$(jq -c ".inbounds[$TARGET_INDEX].settings.clients[0:1]" "$CONFIG_FILE")
+    # --- 3. 准备新的客户列表 ---
+    # 使用动态变量 $USER_FIELD 读取原有用户，只取第一个作为备份/直连用户
+    EXISTING_USERS=$(jq -c ".inbounds[$TARGET_INDEX].settings.${USER_FIELD}[0:1]" "$CONFIG_FILE")
     
     echo "[]" > /tmp/new_outbounds.json
     echo "[]" > /tmp/new_rules.json
-    # 初始化 clients 列表，先放入原用户
-    echo "$EXISTING_CLIENTS" > /tmp/new_clients.json
+    echo "$EXISTING_USERS" > /tmp/new_users.json
 
-    # 3. 循环生成
+    # --- 4. 循环生成配置 ---
     echo "$NODES_JSON" | jq -c '.countries[]?' | while read -r node; do
         CODE=$(echo "$node" | jq -r '.code')
         
-        # 生成专用 UUID 和 Email (作为路由标记)
-        # 这里使用 xargs 去掉引号，并确保生成新 UUID
         NEW_UUID=$(/usr/local/bin/xray_core/xray uuid)
         USER_EMAIL="icmp9-${CODE}"
         TAG_OUT="icmp9-out-${CODE}"
         PATH_OUT="/${CODE}"
 
-        # 3.1 追加用户到 Clients 列表
-        # 注意：所有用户共用同一个入站端口和路径，靠 Email/UUID 区分
+        # 4.1 追加用户到列表
+        # VMess 和 VLESS 都支持 id 和 email 字段，可以直接追加
         jq --arg uuid "$NEW_UUID" --arg email "$USER_EMAIL" \
            '. + [{"id": $uuid, "email": $email}]' \
-           /tmp/new_clients.json > /tmp/new_clients.json.tmp && mv /tmp/new_clients.json.tmp /tmp/new_clients.json
+           /tmp/new_users.json > /tmp/new_users.json.tmp && mv /tmp/new_users.json.tmp /tmp/new_users.json
 
-        # 3.2 生成出站 (Outbound)
+        # 4.2 生成出站 (Outbound) - 始终连接 ICMP9 远端 (VMess)
         jq -n \
            --arg tag "$TAG_OUT" --arg host "$R_HOST" --arg port "$R_PORT" \
            --arg uuid "$REMOTE_UUID" --arg wshost "$R_WSHOST" --arg tls "$R_TLS" --arg path "$PATH_OUT" \
@@ -137,25 +188,24 @@ inject_config() {
                 "wsSettings": { "path": $path, "headers": {"Host": $wshost} } }
            }' >> /tmp/outbound_block.json
 
-        # 3.3 生成路由规则 (基于 User Email)
+        # 4.3 生成路由规则 (基于 User Email 分流)
         jq -n \
            --arg email "$USER_EMAIL" \
            --arg outTag "$TAG_OUT" \
            '{ "type": "field", "user": [$email], "outboundTag": $outTag }' >> /tmp/rule_block.json
            
-        # 保存 UUID 映射关系供最后输出链接使用
         echo "${CODE}|${NEW_UUID}" >> /tmp/uuid_map.txt
     done
 
-    # 4. 合并并注入
+    # --- 5. 合并并注入 ---
     jq -s '.' /tmp/outbound_block.json > /tmp/final_outbounds.json
     jq -s '.' /tmp/rule_block.json > /tmp/final_rules.json
     
-    # 注入 Clients 到指定的 Inbound
-    # 这里使用 tricky 的 jq 语法更新特定 index 的 clients
-    jq --slurpfile new_clients /tmp/new_clients.json \
+    # [核心修复] 注入用户到动态字段 (users 或 clients)
+    jq --slurpfile new_list /tmp/new_users.json \
        --argjson idx "$TARGET_INDEX" \
-       '.inbounds[$idx].settings.clients = $new_clients[0]' \
+       --arg field "$USER_FIELD" \
+       '.inbounds[$idx].settings[$field] = $new_list[0]' \
        "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
     # 注入 Outbounds
@@ -164,7 +214,7 @@ inject_config() {
     # 注入 Routing (置顶)
     jq --slurpfile new_rules /tmp/final_rules.json '.routing.rules = ($new_rules[0] + .routing.rules)' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    rm -f /tmp/new_clients.json /tmp/outbound_block.json /tmp/rule_block.json /tmp/final_*.json /tmp/new_clients.json.tmp
+    rm -f /tmp/new_users.json /tmp/outbound_block.json /tmp/rule_block.json /tmp/final_*.json /tmp/new_users.json.tmp
 }
 
 # ============================================================
@@ -179,10 +229,11 @@ finish_setup() {
     fi
 
     echo -e "\n${GREEN}======================================================${PLAIN}"
-    echo -e "${GREEN}   ICMP9 中转部署成功 (Multi-User Mode)               ${PLAIN}"
+    echo -e "${GREEN}   ICMP9 中转部署成功 (Port-Binding Mode)             ${PLAIN}"
     echo -e "${GREEN}======================================================${PLAIN}"
-    echo -e "核心优势: 单端口无冲突，无需修改 Cloudflare 配置"
-    echo -e "WS 路径 : ${YELLOW}${LOCAL_PATH}${PLAIN} (所有节点共用)"
+    echo -e "绑定端口 : ${YELLOW}${LOCAL_PORT}${PLAIN}"
+    echo -e "绑定协议 : ${SKYBLUE}${LOCAL_PROTO^^}${PLAIN}"
+    echo -e "WS 路径  : ${SKYBLUE}${LOCAL_PATH}${PLAIN}"
     echo -e "------------------------------------------------------"
     
     echo "$NODES_JSON" | jq -c '.countries[]?' | while read -r node; do
@@ -190,13 +241,21 @@ finish_setup() {
         NAME=$(echo "$node" | jq -r '.name')
         EMOJI=$(echo "$node" | jq -r '.emoji')
         
-        # 从映射文件取回刚才生成的专用 UUID
         UUID=$(grep "^${CODE}|" /tmp/uuid_map.txt | cut -d'|' -f2)
         NODE_ALIAS="${EMOJI} ${NAME} [中转]"
         
-        # 生成链接: 使用统一的 Path，但不同的 UUID
-        LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${LOCAL_PATH}#${NODE_ALIAS}"
-        LINK=${LINK// /%20}
+        # 根据原协议类型生成对应链接
+        if [[ "$LOCAL_PROTO" == "vmess" ]]; then
+            # 构建 VMess JSON 用于分享
+            VMESS_JSON=$(jq -n \
+                --arg v "2" --arg ps "$NODE_ALIAS" --arg add "$ARGO_DOMAIN" --arg port "443" --arg id "$UUID" \
+                --arg scy "auto" --arg net "ws" --arg type "none" --arg host "$ARGO_DOMAIN" --arg path "$LOCAL_PATH" --arg tls "tls" --arg sni "$ARGO_DOMAIN" \
+                '{v:$v, ps:$ps, add:$add, port:$port, id:$id, aid:"0", scy:$scy, net:$net, type:$type, host:$host, path:$path, tls:$tls, sni:$sni}')
+            LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)"
+        else
+            LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${LOCAL_PATH}#${NODE_ALIAS}"
+            LINK=${LINK// /%20}
+        fi
         
         echo -e "${SKYBLUE}${LINK}${PLAIN}"
     done
