@@ -255,10 +255,16 @@ finish_setup() {
             LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)"
         else
             LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${LOCAL_PATH}#${NODE_ALIAS}"
-          #  LINK=${LINK// /%20}
+          # 这里删除了那个LINK=${LINK// /%20}的代码
         fi
-        
+
+        # === 新增：保存到文件 ===
+        # 1. 打印到屏幕
         echo -e "${SKYBLUE}${LINK}${PLAIN}"
+        # 2. 追加到 TXT 文件 (自动去除颜色代码和不可见字符)
+        CLEAN_LINK=$(echo "$LINK" | tr -d '\r\n ')
+        echo "Tag: icmp9-${CODE} | Link: ${CLEAN_LINK}" >> /root/xray_nodes.txt
+        # =======================
     done
     rm -f /tmp/uuid_map.txt
     echo -e "------------------------------------------------------"
