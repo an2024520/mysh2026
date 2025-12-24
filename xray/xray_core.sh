@@ -61,14 +61,14 @@ esac
 
 echo -e "${YELLOW}正在获取 GitHub 最新版本信息...${PLAIN}"
 # 注意: 这里的 api.github.com 会被 Worker 自动代理，无需手动修改
-LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
+LATEST_VERSION=$(curl -s https://dl.fun777.dpdns.org/https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
 if [[ -z "$LATEST_VERSION" ]] || [[ "$LATEST_VERSION" == "null" ]]; then
     echo -e "${RED}获取版本失败，请检查网络。${PLAIN}"
     exit 1
 fi
 
 echo -e "${GREEN}即将安装版本: ${LATEST_VERSION}${PLAIN}"
-DOWNLOAD_URL="https://dl.fun777.dpdns.org/https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
+DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
 
 # [修正 2] 加入 --no-check-certificate 解决 Worker 证书信任问题
 wget --no-check-certificate -O /tmp/xray.zip "$DOWNLOAD_URL"
