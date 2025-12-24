@@ -262,7 +262,7 @@ finish_setup() {
 
         # === 新增：保存到文件 ===
         # 1. 打印到屏幕
-        echo -e "${SKYBLUE}${LINK}${PLAIN}"
+        #echo -e "${SKYBLUE}${LINK}${PLAIN}"
         # 2. 追加到 TXT 文件 (自动去除颜色代码和不可见字符)
         CLEAN_LINK=$(echo "$LINK" | tr -d '\r\n ')
         #要标识就是echo "Tag: icmp9-${CODE} | Link: ${CLEAN_LINK}" >> /root/xray_nodes2.txt
