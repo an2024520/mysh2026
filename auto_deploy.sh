@@ -1,9 +1,8 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v6.9 Final-Restore)
+#  Commander Auto-Deploy (v7.0 IPv6 Enhanced)
 #  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
-#  - 协议支持: Sing-box 全系 (5种) + Xray 全系 (4种)
-#  - 修复: 恢复完整的 WARP/Argo 交互菜单，拒绝过度简化
+#  - 升级: 集成智能 IPv6 环境检测与 DNS 优化
 # ============================================================
 
 # --- 基础定义 ---
@@ -12,13 +11,39 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 RED='\033[0;31m'
 PLAIN='\033[0m'
+GRAY='\033[0;37m'
 
 URL_LIST="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST="/tmp/sh_url.txt"
 
 # ============================================================
-#  0. 环境预处理 (Check Dir Clean)
+#  0. 环境预处理 (Environment Prep)
 # ============================================================
+
+check_ipv6_environment() {
+    # 仅在需要下载前检查环境
+    echo -e "${YELLOW}>>> [环境自检] 检测网络连通性...${PLAIN}"
+    if curl -4 -s --connect-timeout 3 https://1.1.1.1 >/dev/null 2>&1; then
+        return
+    fi
+
+    echo -e "${YELLOW}>>> 检测到 IPv6-Only 环境，正在优化 DNS 配置...${PLAIN}"
+    
+    # 备份并重写 DNS 为 Google/CF (移除不稳定的 NAT64)
+    if [[ ! -f /etc/resolv.conf.bak ]]; then
+        cp /etc/resolv.conf /etc/resolv.conf.bak
+    fi
+
+    chattr -i /etc/resolv.conf >/dev/null 2>&1
+    cat > /etc/resolv.conf << EOF
+nameserver 2001:4860:4860::8888
+nameserver 2606:4700:4700::1111
+nameserver 2001:4860:4860::8844
+nameserver 2606:4700:4700::1001
+EOF
+    chattr +i /etc/resolv.conf >/dev/null 2>&1
+    echo -e "${GREEN}>>> DNS 优化完成。${PLAIN}"
+}
 
 check_dir_clean() {
     local current_script=$(basename "$0")
@@ -47,6 +72,8 @@ check_dir_clean() {
 # ============================================================
 
 init_urls() {
+    # 在下载 URL 列表前，确保网络环境已优化
+    check_ipv6_environment
     wget -qO "$LOCAL_LIST" "$URL_LIST"
 }
 
