@@ -264,6 +264,7 @@ finish_setup() {
         # 2. 追加到 TXT 文件 (自动去除颜色代码和不可见字符)
         CLEAN_LINK=$(echo "$LINK" | tr -d '\r\n ')
         echo "Tag: icmp9-${CODE} | Link: ${CLEAN_LINK}" >> /root/xray_nodes.txt
+        #如果不要标识就是echo "$CLEAN_LINK" >> /root/xray_nodes.txt
         # =======================
     done
     rm -f /tmp/uuid_map.txt
