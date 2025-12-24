@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v4.1 IPv6 Enhanced)
+#  全能协议管理中心 (Commander v4.2 Strict IPv6)
 #  - 架构: Xray / Sing-box / Hy2 / Tools 纵向分流
-#  - 特性: 深度适配 IPv6-Only 环境 (Google/CF DNS 优化)
+#  - 升级: 引入严格的 IPv4 可用性检测 (基于 Public IP)
 # ============================================================
 
-# 颜色定义
+# ... [保留原有的颜色定义] ...
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -16,14 +16,10 @@ GRAY='\033[0;37m'
 BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 
-# ==========================================
-# 1. 核心配置与文件映射
-# ==========================================
-# 注意: 在纯 IPv6 环境下，请确保此 URL 支持 IPv6 访问或使用代理
+# ... [保留文件映射变量] ...
 URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
 
-# --- Xray 系列 ---
 FILE_XRAY_CORE="xray_core.sh"
 FILE_XRAY_UNINSTALL="xray_uninstall_all.sh"
 FILE_ADD_XHTTP="xray_vless_xhttp_reality.sh"
@@ -34,7 +30,6 @@ FILE_XRAY_WARP="xray_module_warp_native_route.sh"
 FILE_XRAY_INFO="xray_get_node_details.sh"
 FILE_XRAY_DEL="xray_module_node_del.sh"
 
-# --- Sing-box 系列 ---
 FILE_SB_CORE="sb_install_core.sh"
 FILE_SB_UNINSTALL="sb_uninstall.sh"
 FILE_SB_ADD_ANYTLS="sb_anytls_reality.sh"
@@ -47,61 +42,59 @@ FILE_SB_WARP="sb_module_warp_native_route.sh"
 FILE_SB_INFO="sb_get_node_details.sh"
 FILE_SB_DEL="sb_module_node_del.sh"
 
-# --- 独立协议 ---
 FILE_HY2="hy2.sh"
-
-# --- 系统工具 ---
 FILE_BOOST="sys_tools.sh"
 FILE_CF_TUNNEL="install_cf_tunnel_debian.sh"
 FILE_FIX_IPV6="fix_ipv6_dual_core.sh"
 
 # ==========================================
-# 2. 引擎函数
+# 2. 引擎函数 (Updated)
 # ==========================================
 
 check_ipv6_environment() {
-    echo -e "${YELLOW}正在检测网络环境...${PLAIN}"
+    echo -e "${YELLOW}正在执行严格的网络环境检测...${PLAIN}"
     
-    # 1. 检测 IPv4 连通性
-    if curl -4 -s --connect-timeout 3 https://1.1.1.1 >/dev/null 2>&1; then
-        echo -e "${GREEN}IPv4 连接正常 (双栈环境)。${PLAIN}"
+    # 严格模式: 尝试获取公网 IPv4 地址。
+    # 只有当 curl 成功返回且内容符合 IPv4 格式时，才认为有 IPv4。
+    # -m 5: 最多等待 5 秒，防止劣质 NAT64 卡死
+    local ipv4_check=$(curl -4 -s -m 5 http://ip.sb 2>/dev/null)
+    
+    if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${GREEN}IPv4 连接确认有效 (IP: $ipv4_check)。${PLAIN}"
         return
     fi
 
     echo -e "${YELLOW}======================================================${PLAIN}"
-    echo -e "${RED}⚠️  检测到纯 IPv6 环境 (IPv6-Only)！${PLAIN}"
-    echo -e "${GRAY}系统将配置标准 IPv6 DNS (Google/Cloudflare) 以优化解析稳定性。${PLAIN}"
-    echo -e "${GRAY}(不再使用不稳定的 NAT64 服务)${PLAIN}"
+    echo -e "${RED}⚠️  检测到纯 IPv6 环境 (IPv4 无法获取公网 IP)${PLAIN}"
+    echo -e "${GRAY}可能是 IPv6-Only 机器，或 NAT64 极不稳定。${PLAIN}"
+    echo -e "${GRAY}即将配置 Google/Cloudflare IPv6 DNS 以确保稳定性。${PLAIN}"
     
-    # 2. 备份现有 DNS
     if [[ ! -f /etc/resolv.conf.bak ]]; then
         cp /etc/resolv.conf /etc/resolv.conf.bak
     fi
 
-    # 3. 解锁并写入高性能 IPv6 DNS
     echo -e "${YELLOW}正在优化 DNS 配置...${PLAIN}"
     chattr -i /etc/resolv.conf >/dev/null 2>&1
     
     cat > /etc/resolv.conf << EOF
-# Commander Optimized IPv6 DNS
 nameserver 2001:4860:4860::8888
 nameserver 2606:4700:4700::1111
 nameserver 2001:4860:4860::8844
 nameserver 2606:4700:4700::1001
 EOF
 
-    # 锁定文件防止 DHCP 覆盖 (可选，根据稳定性需求)
     chattr +i /etc/resolv.conf >/dev/null 2>&1
     
-    # 4. 再次测试连通性 (使用 IPv6 目标)
-    if curl -6 -s --connect-timeout 5 https://www.google.com >/dev/null 2>&1; then
-        echo -e "${GREEN}IPv6 环境优化完成，网络连接正常。${PLAIN}"
+    # 复测
+    if curl -6 -s -m 5 https://www.google.com >/dev/null 2>&1; then
+        echo -e "${GREEN}IPv6 环境优化完成。${PLAIN}"
     else
-        echo -e "${RED}警告: DNS 已更新但网络似乎仍不可达，请检查 VPS 的 IPv6 网关设置。${PLAIN}"
-        sleep 3
+        echo -e "${RED}警告: DNS 已更新但 IPv6 网络似乎仍不可达，请检查网关。${PLAIN}"
+        sleep 2
     fi
 }
 
+# ... [保留原有的 check_dir_clean, init_urls, check_run 等函数] ...
 check_dir_clean() {
     local current_script=$(basename "$0")
     local file_count=$(ls -1 | grep -v "^$current_script$" | wc -l)
@@ -120,11 +113,11 @@ check_dir_clean() {
 
 init_urls() {
     echo -e "${YELLOW}正在同步脚本列表...${PLAIN}"
-    # 尝试下载。如果环境是纯 IPv6 且 Github 只有 IPv4，此处可能会失败。
-    # 假设用户已通过其他方式（如 Proxy）解决了 URL 可达性。
-    wget -T 15 -t 3 -qO "$LOCAL_LIST_FILE" "${URL_LIST_FILE}?t=$(date +%s)"
+    # 使用支持 IPv6 的 GitHub 代理前缀，防止纯 IPv6 环境无法下载
+    GH_PROXY="https://ghp.ci/"
+    wget -T 15 -t 3 -qO "$LOCAL_LIST_FILE" "${GH_PROXY}${URL_LIST_FILE}?t=$(date +%s)"
     if [[ $? -ne 0 ]]; then
-        [[ -f "$LOCAL_LIST_FILE" ]] && echo -e "${YELLOW}网络异常，使用缓存列表。${PLAIN}" || { echo -e "${RED}错误: 无法获取列表。请检查 Github 连接或手动上传 sh_url.txt。${PLAIN}"; exit 1; }
+        [[ -f "$LOCAL_LIST_FILE" ]] && echo -e "${YELLOW}网络异常，使用缓存列表。${PLAIN}" || { echo -e "${RED}错误: 无法获取列表。${PLAIN}"; exit 1; }
     else
         echo -e "${GREEN}同步完成。${PLAIN}"
     fi
@@ -141,6 +134,13 @@ check_run() {
         echo -e "${YELLOW}正在下载组件 [$script_name] ...${PLAIN}"
         local script_url=$(get_url_by_name "$script_name")
         [[ -z "$script_url" ]] && { echo -e "${RED}错误: sh_url.txt 未找到记录。${PLAIN}"; read -p "按回车继续..."; return; }
+        
+        # 自动添加代理
+        GH_PROXY="https://ghp.ci/"
+        if [[ "$script_url" == *"github"* ]] && [[ "$script_url" != *"$GH_PROXY"* ]]; then
+            script_url="${GH_PROXY}${script_url}"
+        fi
+
         wget -qO "$script_name" "${script_url}?t=$(date +%s)"
         [[ $? -ne 0 ]] && { echo -e "${RED}下载失败。${PLAIN}"; read -p "按回车继续..."; return; }
         chmod +x "$script_name"
@@ -149,10 +149,7 @@ check_run() {
     [[ "$no_pause" != "true" ]] && { echo -e ""; read -p "操作结束，按回车键继续..."; }
 }
 
-# ==========================================
-# 3. 纵向子菜单逻辑 (带文件名映射)
-# ==========================================
-
+# ... [保留所有 menu_xray, menu_singbox 等菜单函数不变] ...
 menu_xray() {
     while true; do
         clear
@@ -239,15 +236,11 @@ menu_system() {
     done
 }
 
-# ==========================================
-# 4. 主程序入口
-# ==========================================
-
 show_main_menu() {
     while true; do
         clear
         echo -e "${GREEN}============================================${PLAIN}"
-        echo -e "${GREEN}      全能协议管理中心 (Commander v4.1)      ${PLAIN}"
+        echo -e "${GREEN}      全能协议管理中心 (Commander v4.2)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
         
         STATUS_TEXT=""
