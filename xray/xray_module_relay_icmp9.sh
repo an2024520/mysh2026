@@ -221,6 +221,8 @@ inject_config() {
 # 3. 验证与输出
 # ============================================================
 finish_setup() {
+    # 1. 每次运行脚本前先清空旧的中转节点文件
+    > /root/xray_nodes2.txt
     ARGO_DOMAIN=$(echo "$ARGO_DOMAIN" | tr -d '\r\n ')
     echo -e "${YELLOW}>>> [重启] 应用配置...${PLAIN}"
     systemctl restart xray
@@ -236,7 +238,7 @@ finish_setup() {
     echo -e "绑定协议 : ${SKYBLUE}${LOCAL_PROTO^^}${PLAIN}"
     echo -e "WS 路径  : ${SKYBLUE}${LOCAL_PATH}${PLAIN}"
     echo -e "------------------------------------------------------"
-    
+
     echo "$NODES_JSON" | jq -c '.countries[]?' | while read -r node; do
         CODE=$(echo "$node" | jq -r '.code')
         NAME=$(echo "$node" | jq -r '.name')
@@ -263,8 +265,8 @@ finish_setup() {
         echo -e "${SKYBLUE}${LINK}${PLAIN}"
         # 2. 追加到 TXT 文件 (自动去除颜色代码和不可见字符)
         CLEAN_LINK=$(echo "$LINK" | tr -d '\r\n ')
-        echo "Tag: icmp9-${CODE} | Link: ${CLEAN_LINK}" >> /root/xray_nodes.txt
-        #如果不要标识就是echo "$CLEAN_LINK" >> /root/xray_nodes.txt
+        #要标识就是echo "Tag: icmp9-${CODE} | Link: ${CLEAN_LINK}" >> /root/xray_nodes2.txt
+        echo "$CLEAN_LINK" >> /root/xray_nodes2.txt
         # =======================
     done
     rm -f /tmp/uuid_map.txt
