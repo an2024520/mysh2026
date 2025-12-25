@@ -371,7 +371,7 @@ menu_protocols() {
         clear; echo -e "${SKYBLUE}=== 协议选择 ===${PLAIN}"
         echo -e "${YELLOW}--- Sing-box 体系 ---${PLAIN}"
         echo -e " 1. [$(get_status $DEPLOY_SB_VISION)] Vless_Vision_Reality"
-        echo -e " 2. [$(get_status $DEPLOY_SB_WS)] Vless_WS_TLS (CDN)"
+        echo -e " 2. [$(get_status $DEPLOY_SB_WS)] Vless_WS_TLS (CDN_回源)"
         echo -e " 3. [$(get_status $DEPLOY_SB_WS_TUNNEL)] Vless_WS_Tunnel"
         echo -e " 4. [$(get_status $DEPLOY_SB_ANYTLS)] AnyTLS_Reality"
         echo -e " 5. [$(get_status $DEPLOY_SB_HY2)] Hysteria_2"
