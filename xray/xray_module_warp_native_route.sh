@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  Xray WARP Native Route 管理面板 (v3.0 Ultimate-Menu)
-#  - 架构: 管理面板 (Menu) + 模块化功能
-#  - 对齐: 1:1 复刻 Sing-box 版本的交互体验与功能逻辑
-#  - 特性: 状态自检、独立注册、模式热切换、卸载清理
+#  Xray WARP Native Route 管理面板 (v3.1 Ultimate-Sync)
+#  - 核心: 1:1 复刻 Sing-box 版本菜单逻辑与交互体验
+#  - 修复: 补全“全局接管”的二级子菜单 (IPv4/IPv6/Dual)
+#  - 增强: “指定节点接管”支持动态读取 config.json 节点列表
+#  - 逻辑: 严格遵循“配置即最终态”原则 (先清空后写入)
 # ============================================================
 
 RED='\033[0;31m'
@@ -41,7 +42,7 @@ check_dependencies() {
 }
 
 # ============================================================
-# 1. 核心功能函数
+# 1. 基础功能函数
 # ============================================================
 
 check_env() {
@@ -105,21 +106,26 @@ load_credentials() {
     fi
 }
 
-# 核心注入函数：同时处理 Outbound 和 Routing
-apply_config() {
-    local mode="$1" # 1=Stream, 2=IPv4, 3=Specific, 4=Global
-    
-    if [[ ! -f "$CONFIG_FILE" ]]; then echo -e "${RED}错误: 找不到 config.json${PLAIN}"; return; fi
-    if ! load_credentials; then echo -e "${RED}错误: 未找到凭证，请先配置账号(选项1)。${PLAIN}"; return; fi
-    
+ensure_warp_exists() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then echo -e "${RED}错误: 找不到 config.json${PLAIN}"; return 1; fi
+    if ! load_credentials; then echo -e "${RED}错误: 未找到凭证，请先配置账号(选项1)。${PLAIN}"; return 1; fi
     check_env
-    echo -e "${YELLOW}正在应用配置 (模式: $mode)...${PLAIN}"
+    return 0
+}
+
+# ============================================================
+# 2. 核心注入逻辑 (配置即最终态)
+# ============================================================
+
+apply_routing_rule() {
+    local rule_json="$1"
+    echo -e "${YELLOW}正在应用路由规则...${PLAIN}"
     cp "$CONFIG_FILE" "$BACKUP_FILE"
 
-    # 1. 清理旧 WARP
+    # [配置即最终态] 1. 彻底清理旧的 WARP Outbound 和 Rules
     jq '.outbounds |= map(select(.tag != "warp-out")) | .routing.rules |= map(select(.outboundTag != "warp-out"))' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    # 2. 注入 Outbound
+    # 2. 重新注入 Outbound
     local res_json="[${WG_RESERVED}]"
     jq --arg key "$WG_KEY" --arg addr "$WG_ADDR" --argjson res "$res_json" --arg ep "$FINAL_ENDPOINT" \
        '.outbounds += [{ 
@@ -128,39 +134,81 @@ apply_config() {
             "settings": { "secretKey": $key, "address": [$addr], "peers": [{ "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", "endpoint": $ep, "keepAlive": 15 }], "reserved": $res, "mtu": 1280 } 
        }]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    # 3. 生成规则
+    # 3. 构造防环回规则
     local anti_loop_ips="[]"
     [[ -n "$FINAL_ENDPOINT_IP" ]] && anti_loop_ips="[\"${FINAL_ENDPOINT_IP}\"]"
     local anti_loop=$(jq -n --argjson i "$anti_loop_ips" '{ "type": "field", "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "ip": $i, "outboundTag": "direct" }')
 
-    local rule=""
-    case "$mode" in
-        2) rule='{ "type": "field", "network": "tcp,udp", "ip": ["0.0.0.0/0"], "outboundTag": "warp-out" }' ;;
-        3) 
-            if [[ -z "$WARP_INBOUND_TAGS" ]]; then
-                echo -e "${YELLOW}当前 Tags:${PLAIN}"; jq -r '.inbounds[].tag' "$CONFIG_FILE" | grep -v "api" | nl
-                read -p "输入要接管的 Tag (逗号分隔): " WARP_INBOUND_TAGS
-            fi
-            local tag_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
-            rule=$(jq -n --argjson t "$tag_json" '{ "type": "field", "inboundTag": $t, "outboundTag": "warp-out" }') ;;
-        4) rule='{ "type": "field", "network": "tcp,udp", "outboundTag": "warp-out" }' ;;
-        *) rule='{ "type": "field", "domain": ["geosite:netflix","geosite:disney","geosite:openai","geosite:google","geosite:youtube"], "outboundTag": "warp-out" }' ;;
-    esac
-
-    if [[ -n "$rule" ]]; then
-         jq --argjson r1 "$anti_loop" --argjson r2 "$rule" '.routing.rules = [$r1, $r2] + .routing.rules' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    # 4. 组合新规则 (防环回 + 策略规则)
+    if [[ -n "$rule_json" ]]; then
+         jq --argjson r1 "$anti_loop" --argjson r2 "$rule_json" '.routing.rules = [$r1, $r2] + .routing.rules' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     else
          jq --argjson r1 "$anti_loop" '.routing.rules = [$r1] + .routing.rules' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     fi
 
-    # 重启
+    # 重启验证
     if systemctl restart xray; then
-        echo -e "${GREEN}设置成功！Xray 已重启。${PLAIN}"
+        echo -e "${GREEN}策略已更新，Xray 重启成功。${PLAIN}"
     else
-        echo -e "${RED}重启失败，还原配置...${PLAIN}"
+        echo -e "${RED}Xray 重启失败，回滚配置...${PLAIN}"
         cp "$BACKUP_FILE" "$CONFIG_FILE"
         systemctl restart xray
     fi
+}
+
+# ============================================================
+# 3. 模式逻辑 (对齐 Sing-box)
+# ============================================================
+
+mode_stream() {
+    ensure_warp_exists || return
+    apply_routing_rule "$(jq -n '{ "type": "field", "domain": ["geosite:netflix","geosite:disney","geosite:openai","geosite:google","geosite:youtube"], "outboundTag": "warp-out" }')"
+}
+
+mode_global() {
+    ensure_warp_exists || return
+    echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全接管"
+    read -p "选择模式: " sub
+    
+    local warp_rule=""
+    case "$sub" in
+        a) warp_rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "ip": ["0.0.0.0/0"], "outboundTag": "warp-out" }') ;;
+        b) warp_rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "ip": ["::/0"], "outboundTag": "warp-out" }') ;;
+        *) warp_rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "outboundTag": "warp-out" }') ;;
+    esac
+    
+    apply_routing_rule "$warp_rule"
+    echo -e "${GREEN}全局接管策略已应用 (防环回已置顶)。${PLAIN}"
+}
+
+mode_specific_node() {
+    ensure_warp_exists || return
+    # 动态读取 Xray 配置文件中的入站 Tag
+    echo -e "${YELLOW}正在读取节点列表...${PLAIN}"
+    local node_list=$(jq -r '.inbounds[] | "\(.tag) | \(.protocol)"' "$CONFIG_FILE" | grep -v "api" | nl)
+    
+    if [[ -z "$node_list" ]]; then
+        echo -e "${RED}未找到有效入站节点 (Inbounds)。${PLAIN}"
+        return
+    fi
+    
+    echo "$node_list"
+    echo -e "${GRAY}(支持多选，用空格分隔，例如: 1 3)${PLAIN}"
+    read -p "输入节点序号: " selection
+    
+    local tags_json="[]"
+    for num in $selection; do
+        local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $1}') # awk两次去除空格
+        [[ -n "$tag" ]] && tags_json=$(echo "$tags_json" | jq --arg t "$tag" '. + [$t]')
+    done
+    
+    if [[ "$tags_json" == "[]" ]]; then
+        echo -e "${YELLOW}未选择任何节点，取消操作。${PLAIN}"
+        return
+    fi
+    
+    echo -e "${GREEN}选中节点: $tags_json${PLAIN}"
+    apply_routing_rule "$(jq -n --argjson ib "$tags_json" '{ "type": "field", "inboundTag": $ib, "outboundTag": "warp-out" }')"
 }
 
 uninstall_warp() {
@@ -172,18 +220,17 @@ uninstall_warp() {
 }
 
 # ============================================================
-# 2. 菜单界面 (复刻 Sing-box 风格)
+# 4. 菜单界面 (1:1 复刻)
 # ============================================================
 
 show_menu() {
     check_dependencies
     while true; do
         clear
-        # 状态自检
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v3.0 Menu)${PLAIN}"
+                st="${GREEN}已配置 (v3.1 Ultimate)${PLAIN}"
             fi
         fi
 
@@ -192,12 +239,9 @@ show_menu() {
         echo -e "----------------------------------------------------"
         echo -e " 1. 配置 WARP 凭证 (自动/手动)"
         echo -e " 2. 查看当前凭证信息"
-        echo -e " -----------------"
         echo -e " 3. 模式一：流媒体分流 (推荐)"
-        echo -e " 4. 模式二：IPv4 流量接管"
+        echo -e " 4. 模式二：全局接管"
         echo -e " 5. 模式三：指定节点接管"
-        echo -e " 6. 模式四：全局双栈接管"
-        echo -e " -----------------"
         echo -e " 7. 卸载/清除 WARP 配置"
         echo -e " 0. 返回上级菜单"
         echo ""
@@ -218,10 +262,9 @@ show_menu() {
                 fi
                 read -p "按回车继续..." 
                 ;;
-            3) apply_config 1; read -p "按回车继续..." ;;
-            4) apply_config 2; read -p "按回车继续..." ;;
-            5) unset WARP_INBOUND_TAGS; apply_config 3; read -p "按回车继续..." ;;
-            6) apply_config 4; read -p "按回车继续..." ;;
+            3) mode_stream; read -p "按回车继续..." ;;
+            4) mode_global; read -p "按回车继续..." ;;
+            5) mode_specific_node; read -p "按回车继续..." ;;
             7) uninstall_warp; read -p "按回车继续..." ;;
             0) exit 0 ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
@@ -230,19 +273,27 @@ show_menu() {
 }
 
 # ============================================================
-# 3. 入口逻辑
+# 5. 入口逻辑
 # ============================================================
 
 auto_main() {
     echo -e "${GREEN}>>> [Auto] 正在应用 WARP 配置...${PLAIN}"
-    # 自动模式下，依赖环境变量
     if [[ -z "$WARP_PRIV_KEY" ]]; then register_warp; fi
-    # 映射自动模式变量到函数参数
-    local m="1"
-    [[ "$WARP_MODE_SELECT" == "2" ]] && m="2"
-    [[ "$WARP_MODE_SELECT" == "3" ]] && m="3"
-    [[ "$WARP_MODE_SELECT" == "4" ]] && m="4"
-    apply_config "$m"
+    ensure_warp_exists || exit 1
+    
+    # 自动模式参数映射
+    local rule=""
+    case "$WARP_MODE_SELECT" in
+        2) # 自动模式的2对应全局IPv4 (默认策略)
+           rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "ip": ["0.0.0.0/0"], "outboundTag": "warp-out" }') ;;
+        3) # 指定Tag
+           [[ -n "$WARP_INBOUND_TAGS" ]] && rule=$(jq -n --argjson t "$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')" '{ "type": "field", "inboundTag": $t, "outboundTag": "warp-out" }') ;;
+        4) # 真正的全双栈
+           rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "outboundTag": "warp-out" }') ;;
+        *) # 默认流媒体
+           rule=$(jq -n '{ "type": "field", "domain": ["geosite:netflix","geosite:disney","geosite:openai","geosite:google","geosite:youtube"], "outboundTag": "warp-out" }') ;;
+    esac
+    apply_routing_rule "$rule"
 }
 
 if [[ "$AUTO_SETUP" == "true" ]]; then
