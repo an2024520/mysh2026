@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Xray WARP Native Route 管理面板 (v3.1 Ultimate-Sync)
+#  Xray WARP Native Route 管理面板 (v3.2 Ultimate-Final)
 #  - 核心: 1:1 复刻 Sing-box 版本菜单逻辑与交互体验
-#  - 修复: 补全“全局接管”的二级子菜单 (IPv4/IPv6/Dual)
-#  - 增强: “指定节点接管”支持动态读取 config.json 节点列表
+#  - 修复: 解决纯 IPv6 环境下因缺失 IPv4 内网地址导致的断连问题
+#  - 增强: 自动补全 WARP 内网 IPv4/IPv6 地址
 #  - 逻辑: 严格遵循“配置即最终态”原则 (先清空后写入)
 # ============================================================
 
@@ -67,39 +67,50 @@ register_warp() {
         -H "User-Agent: okhttp/3.12.1" -H "Content-Type: application/json; charset=UTF-8" \
         -d "{\"key\":\"${pub_key}\",\"install_id\":\"${install_id}\",\"fcm_token\":\"${install_id}:APA91bHuwEuLNj_${install_id}\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"model\":\"Android\",\"serial_number\":\"${install_id}\",\"locale\":\"zh_CN\"}")
     
+    # [修复] 同时获取 v4 和 v6
+    local v4=$(echo "$result" | jq -r '.config.interface.addresses.v4')
     local v6=$(echo "$result" | jq -r '.config.interface.addresses.v6')
     local client_id=$(echo "$result" | jq -r '.config.client_id')
+    
     if [[ "$v6" == "null" || -z "$v6" ]]; then echo -e "${RED}注册失败。${PLAIN}"; return 1; fi
     
     local res_str=$(python3 -c "import base64, json; d=base64.b64decode('$client_id'); print(','.join([str(x) for x in d[0:3]]))" 2>/dev/null)
     
     mkdir -p "$(dirname "$CRED_FILE")"
     echo "WARP_PRIV_KEY=\"$priv_key\"" > "$CRED_FILE"
-    echo "WARP_IPV6=\"$v6/128\"" >> "$CRED_FILE"
+    echo "WARP_IPV4=\"$v4/32\"" >> "$CRED_FILE"   # 保存 v4
+    echo "WARP_IPV6=\"$v6/128\"" >> "$CRED_FILE"  # 保存 v6
     echo "WARP_RESERVED=\"$res_str\"" >> "$CRED_FILE"
     echo -e "${GREEN}注册成功！凭证已保存。${PLAIN}"
     
     # 注册完自动加载
-    export WG_KEY="$priv_key" WG_ADDR="$v6/128" WG_RESERVED="$res_str"
+    export WG_KEY="$priv_key" WG_IPV4="$v4/32" WG_IPV6="$v6/128" WG_RESERVED="$res_str"
 }
 
 manual_warp() {
-    read -p "私钥: " k; read -p "IPv6地址: " a; read -p "Reserved: " r
+    # [修复] 增加 IPv4 输入
+    read -p "私钥: " k
+    read -p "IPv4地址 (e.g. 172.16.0.2/32): " v4
+    read -p "IPv6地址 (e.g. 2606:.../128): " v6
+    read -p "Reserved: " r
+    
     mkdir -p "$(dirname "$CRED_FILE")"
     echo "WARP_PRIV_KEY=\"$k\"" > "$CRED_FILE"
-    echo "WARP_IPV6=\"$a\"" >> "$CRED_FILE"
+    echo "WARP_IPV4=\"$v4\"" >> "$CRED_FILE"
+    echo "WARP_IPV6=\"$v6\"" >> "$CRED_FILE"
     echo "WARP_RESERVED=\"$r\"" >> "$CRED_FILE"
-    export WG_KEY="$k" WG_ADDR="$a" WG_RESERVED="$r"
+    
+    export WG_KEY="$k" WG_IPV4="$v4" WG_IPV6="$v6" WG_RESERVED="$r"
     echo -e "${GREEN}凭证已手动录入。${PLAIN}"
 }
 
 load_credentials() {
     if [[ -f "$CRED_FILE" ]]; then
         source "$CRED_FILE"
-        export WG_KEY="$WARP_PRIV_KEY" WG_ADDR="$WARP_IPV6" WG_RESERVED="$WARP_RESERVED"
+        export WG_KEY="$WARP_PRIV_KEY" WG_IPV4="$WARP_IPV4" WG_IPV6="$WARP_IPV6" WG_RESERVED="$WARP_RESERVED"
         return 0
     elif [[ -n "$WARP_PRIV_KEY" ]]; then
-        export WG_KEY="$WARP_PRIV_KEY" WG_ADDR="$WARP_IPV6" WG_RESERVED=$(echo "$WARP_RESERVED" | tr -d '[] ')
+        export WG_KEY="$WARP_PRIV_KEY" WG_IPV4="$WARP_IPV4" WG_IPV6="$WARP_IPV6" WG_RESERVED=$(echo "$WARP_RESERVED" | tr -d '[] ')
         return 0
     else
         return 1
@@ -127,17 +138,33 @@ apply_routing_rule() {
 
     # 2. 重新注入 Outbound
     local res_json="[${WG_RESERVED}]"
-    jq --arg key "$WG_KEY" --arg addr "$WG_ADDR" --argjson res "$res_json" --arg ep "$FINAL_ENDPOINT" \
+    
+    # [修复] 构造包含 v4 和 v6 的地址数组
+    # 兼容性处理: 如果 v4 为空，则只填 v6 (防止旧凭证报错)
+    local addr_json="[\"$WG_IPV6\"]"
+    if [[ -n "$WG_IPV4" ]]; then
+        addr_json="[\"$WG_IPV6\",\"$WG_IPV4\"]"
+    fi
+    
+    jq --arg key "$WG_KEY" --argjson addr "$addr_json" --argjson res "$res_json" --arg ep "$FINAL_ENDPOINT" \
        '.outbounds += [{ 
             "tag": "warp-out", 
             "protocol": "wireguard", 
-            "settings": { "secretKey": $key, "address": [$addr], "peers": [{ "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", "endpoint": $ep, "keepAlive": 15 }], "reserved": $res, "mtu": 1280 } 
+            "settings": { "secretKey": $key, "address": $addr, "peers": [{ "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", "endpoint": $ep, "keepAlive": 15 }], "reserved": $res, "mtu": 1280 } 
        }]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
     # 3. 构造防环回规则
+    # [修复] 自动检测直连 Tag (freedom/direct)
+    local direct_tag="direct"
+    if ! jq -e '.outbounds[] | select(.tag == "direct")' "$CONFIG_FILE" >/dev/null 2>&1; then
+        if jq -e '.outbounds[] | select(.tag == "freedom")' "$CONFIG_FILE" >/dev/null 2>&1; then
+            direct_tag="freedom"
+        fi
+    fi
+
     local anti_loop_ips="[]"
     [[ -n "$FINAL_ENDPOINT_IP" ]] && anti_loop_ips="[\"${FINAL_ENDPOINT_IP}\"]"
-    local anti_loop=$(jq -n --argjson i "$anti_loop_ips" '{ "type": "field", "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "ip": $i, "outboundTag": "direct" }')
+    local anti_loop=$(jq -n --argjson i "$anti_loop_ips" --arg tag "$direct_tag" '{ "type": "field", "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "ip": $i, "outboundTag": $tag }')
 
     # 4. 组合新规则 (防环回 + 策略规则)
     if [[ -n "$rule_json" ]]; then
@@ -198,7 +225,7 @@ mode_specific_node() {
     
     local tags_json="[]"
     for num in $selection; do
-        local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $1}') # awk两次去除空格
+        local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $1}')
         [[ -n "$tag" ]] && tags_json=$(echo "$tags_json" | jq --arg t "$tag" '. + [$t]')
     done
     
@@ -230,7 +257,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v3.1 Ultimate)${PLAIN}"
+                st="${GREEN}已配置 (v3.2 Ultimate)${PLAIN}"
             fi
         fi
 
@@ -256,7 +283,10 @@ show_menu() {
                 ;;
             2) 
                 if load_credentials; then
-                    echo -e "PrivKey: $WG_KEY"; echo -e "IPv6: $WG_ADDR"; echo -e "Reserved: $WG_RESERVED"
+                    echo -e "PrivKey: $WG_KEY"
+                    echo -e "IPv4: $WG_IPV4"
+                    echo -e "IPv6: $WG_ADDR"
+                    echo -e "Reserved: $WG_RESERVED"
                 else
                     echo -e "${RED}未找到凭证。${PLAIN}"
                 fi
