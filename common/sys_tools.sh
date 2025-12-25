@@ -2,8 +2,9 @@
 
 # ============================================================
 #  模块五：系统运维工具箱 (System Tools)
-#  - 状态: v2.0 (BBR / SSH防断 / 时间同步 / 证书 / 全日志)
-#  - 适用: Xray / Sing-box / Cloudflare Tunnel
+#  - 状态: v2.3 (BBR / SSH防断 / 时间同步 / 证书 / 全日志 / 端口跳跃 / SSH加固)
+#  - 适用: Xray / Sing-box / Hysteria2 / Cloudflare Tunnel
+#  - 新增: SSH 内置默认公钥回落机制 (回车即用)
 # ============================================================
 
 # 颜色定义
@@ -106,7 +107,7 @@ view_certs() {
     fi
 }
 
-# --- 5. 全能日志查看器 (增强版) ---
+# --- 5. 全能日志查看器 ---
 view_logs() {
     echo -e "${BLUE}============= 服务运行日志 (实时最近 20 行) =============${PLAIN}"
     
@@ -123,8 +124,15 @@ view_logs() {
         journalctl -u sing-box --no-pager -n 20
         echo ""
     fi
+
+    # Hysteria 2 Official Log
+    if systemctl is-active --quiet hysteria-server; then
+        echo -e "${YELLOW}>>> Hysteria 2 Official:${PLAIN}"
+        journalctl -u hysteria-server --no-pager -n 20
+        echo ""
+    fi
     
-    # Cloudflare Tunnel Log (服务名通常为 cloudflared)
+    # Cloudflare Tunnel Log
     if systemctl is-active --quiet cloudflared; then
         echo -e "${YELLOW}>>> Cloudflare Tunnel:${PLAIN}"
         journalctl -u cloudflared --no-pager -n 20
@@ -132,9 +140,146 @@ view_logs() {
     fi
     
     # 检测是否全空
-    if ! systemctl is-active --quiet xray && ! systemctl is-active --quiet sing-box && ! systemctl is-active --quiet cloudflared; then
-         echo -e "${RED}未检测到 Xray / Sing-box / Cloudflared 服务运行。${PLAIN}"
+    if ! systemctl is-active --quiet xray && ! systemctl is-active --quiet sing-box \
+       && ! systemctl is-active --quiet hysteria-server && ! systemctl is-active --quiet cloudflared; then
+         echo -e "${RED}未检测到常见代理服务 (Xray/SB/Hy2/Argo) 运行。${PLAIN}"
     fi
+}
+
+# --- 6. 端口跳跃管理 ---
+manage_port_hopping() {
+    if ! command -v iptables &> /dev/null || ! dpkg -s iptables-persistent &> /dev/null; then
+        echo -e "${YELLOW}检测到缺少 iptables 持久化组件，正在安装...${PLAIN}"
+        apt update -y && apt install -y iptables iptables-persistent netfilter-persistent
+    fi
+    if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+    fi
+    while true; do
+        clear
+        echo -e "${BLUE}========= UDP 端口跳跃管理 (Port Hopping) =========${PLAIN}"
+        echo -e "功能: 利用 Iptables 将大范围 UDP 流量转发至 Hy2/Xray 监听端口"
+        echo -e "----------------------------------------------------"
+        echo -e " ${GREEN}1.${PLAIN} 添加跳跃规则"
+        echo -e " ${RED}2.${PLAIN} 删除跳跃规则"
+        echo -e " ${SKYBLUE}3.${PLAIN} 查看当前规则"
+        echo -e " ----------------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo ""
+        read -p "请选择: " hop_choice
+        case "$hop_choice" in
+            1)
+                echo -e "\n${YELLOW}>>> 添加规则向导${PLAIN}"
+                read -p "请输入真实监听端口 (Target Port, 例 443): " target_port
+                read -p "请输入跳跃起始端口 (Start Port, 例 20000): " start_port
+                read -p "请输入跳跃结束端口 (End Port,   例 30000): " end_port
+                if [[ -z "$target_port" || -z "$start_port" || -z "$end_port" ]]; then
+                    echo -e "${RED}错误: 参数不能为空。${PLAIN}"; sleep 1; continue
+                fi
+                echo -e "${YELLOW}正在添加: UDP $start_port:$end_port -> $target_port ...${PLAIN}"
+                iptables -t nat -A PREROUTING -p udp --dport "$start_port":"$end_port" -j REDIRECT --to-ports "$target_port"
+                netfilter-persistent save >/dev/null 2>&1
+                echo -e "${GREEN}规则已保存。${PLAIN}"; read -p "按回车继续..." ;;
+            2)
+                echo -e "\n${YELLOW}>>> 删除规则向导${PLAIN}"
+                iptables -t nat -nL PREROUTING --line-numbers | grep "REDIRECT"
+                echo -e "----------------------------------------------------"
+                echo -e "请输入要删除的规则对应的 ${GREEN}源端口范围${PLAIN}。"
+                read -p "起始端口: " d_start
+                read -p "结束端口: " d_end
+                if [[ -z "$d_start" || -z "$d_end" ]]; then echo -e "${RED}参数无效。${PLAIN}"; sleep 1; continue; fi
+                iptables -t nat -D PREROUTING -p udp --dport "$d_start":"$d_end" -j REDIRECT 2>/dev/null
+                if [[ $? -eq 0 ]]; then netfilter-persistent save >/dev/null 2>&1; echo -e "${GREEN}删除成功。${PLAIN}"; else echo -e "${RED}删除失败。${PLAIN}"; fi
+                read -p "按回车继续..." ;;
+            3)
+                echo -e "\n${YELLOW}>>> 当前 NAT 转发规则${PLAIN}"
+                iptables -t nat -nL PREROUTING --line-numbers | grep -E "num|REDIRECT|dpts"
+                read -p "按回车继续..." ;;
+            0) break ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- 7. SSH 安全配置 (新) ---
+configure_ssh_security() {
+    # 内置默认 Key (用户提供)
+    local DEFAULT_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILdsaJ9MTQU28cyRJZ3s32V1u9YDNUYRJvCSkztBDGsW eddsa-key-20251218"
+
+    clear
+    echo -e "${BLUE}========= SSH 安全加固 (公钥/禁用密码) =========${PLAIN}"
+    echo -e "1. 导入公钥: 解决 VPS 重装后需要反复输入密码的烦恼。"
+    echo -e "2. 禁用密码: 彻底杜绝 SSH 暴力破解，提升安全等级。"
+    echo -e "------------------------------------------------"
+    
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
+    
+    echo -e "${YELLOW}第一步: 导入公钥 (Authorized Keys)${PLAIN}"
+    echo -e "  1. 从 GitHub 导入"
+    echo -e "  2. 手动粘贴公钥 (留空则自动使用内置默认 Key)"
+    echo -e "  3. 跳过此步"
+    read -p "请选择 [1-3]: " key_opt
+    
+    local pub_key=""
+    if [[ "$key_opt" == "1" ]]; then
+        read -p "请输入 GitHub 用户名: " gh_user
+        if [[ -n "$gh_user" ]]; then
+            echo -e "正在拉取 https://github.com/${gh_user}.keys ..."
+            pub_key=$(curl -s "https://github.com/${gh_user}.keys")
+            if [[ -z "$pub_key" ]] || [[ "$pub_key" == *"Not Found"* ]]; then
+                echo -e "${RED}错误: 未找到用户或 Keys 为空。${PLAIN}"
+                pub_key=""
+            fi
+        fi
+    elif [[ "$key_opt" == "2" ]]; then
+        read -p "请粘贴公钥串 (直接回车使用内置): " input_key
+        if [[ -n "$input_key" ]]; then
+            pub_key="$input_key"
+        else
+            echo -e "${SKYBLUE}>>> 检测到空输入，已加载内置默认公钥。${PLAIN}"
+            pub_key="$DEFAULT_KEY"
+        fi
+    fi
+    
+    if [[ -n "$pub_key" ]]; then
+        # 简单追加，不覆盖原有 Key
+        if grep -q "${pub_key:0:20}" ~/.ssh/authorized_keys 2>/dev/null; then
+            echo -e "${YELLOW}提示: 该公钥似乎已存在，跳过写入。${PLAIN}"
+        else
+            echo "$pub_key" >> ~/.ssh/authorized_keys
+            chmod 600 ~/.ssh/authorized_keys
+            echo -e "${GREEN}✅ 公钥已成功写入 ~/.ssh/authorized_keys${PLAIN}"
+        fi
+    fi
+    
+    echo -e "\n${YELLOW}第二步: 安全策略设置${PLAIN}"
+    echo -e "当前 SSH 密码登录状态: $(grep "^PasswordAuthentication" /etc/ssh/sshd_config || echo "默认(Yes)")"
+    echo -e "${RED}警告: 禁用密码登录前，请务必确认您的私钥可以正常连接！${PLAIN}"
+    read -p "是否禁用 SSH 密码登录? (y/n): " dis_pass
+    
+    if [[ "$dis_pass" == "y" ]]; then
+        # 备份配置
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+        
+        # 启用公钥验证，禁用密码
+        sed -i '/^PubkeyAuthentication/d' /etc/ssh/sshd_config
+        sed -i '/^PasswordAuthentication/d' /etc/ssh/sshd_config
+        sed -i '/^ChallengeResponseAuthentication/d' /etc/ssh/sshd_config
+        
+        echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
+        echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+        echo "ChallengeResponseAuthentication no" >> /etc/ssh/sshd_config
+        
+        systemctl restart sshd
+        echo -e "${GREEN}✅ 已禁用密码登录，并重启 SSH 服务。${PLAIN}"
+    else
+        echo -e "${GRAY}已保留密码登录。${PLAIN}"
+    fi
+    
+    echo -e "\n${GREEN}SSH 配置完成。${PLAIN}"
+    read -p "按回车返回..."
 }
 
 # ==========================================
@@ -151,7 +296,9 @@ show_menu() {
         echo -e " ${SKYBLUE}3.${PLAIN} 强制同步系统时间 ${YELLOW}(修复节点连不上)${PLAIN}"
         echo -e " --------------------------------------------"
         echo -e " ${SKYBLUE}4.${PLAIN} 查看 ACME 证书路径"
-        echo -e " ${SKYBLUE}5.${PLAIN} 查看运行日志 ${YELLOW}(Xray/SB/CF)${PLAIN}"
+        echo -e " ${SKYBLUE}5.${PLAIN} 查看运行日志 ${YELLOW}(Xray/SB/Hy2/CF)${PLAIN}"
+        echo -e " ${GREEN}6.${PLAIN} UDP 端口跳跃管理 ${YELLOW}(适配 Sing-box Hy2)${PLAIN}"
+        echo -e " ${GREEN}7.${PLAIN} SSH 安全配置 ${YELLOW}(导入公钥/禁用密码)${PLAIN}"
         echo -e " --------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo ""
@@ -162,6 +309,8 @@ show_menu() {
             3) sync_time; read -p "按回车继续..." ;;
             4) view_certs; read -p "按回车继续..." ;;
             5) view_logs; read -p "按回车继续..." ;;
+            6) manage_port_hopping ;;
+            7) configure_ssh_security ;;
             0) exit 0 ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
