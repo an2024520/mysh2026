@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  ICMP9 中转扩展模块 (v3.0 Final Perfect Edition)
+#  ICMP9 中转扩展模块 (v3.1 IPv6-Force Edition)
 #  - 架构: 端口锚定 -> 协议自适应 -> 增量注入
 #  - 兼容: VLESS / VMess + WS (Argo Tunnel)
 #  - 修复: 彻底解决 clients/users 字段错位问题
+#  - 特性: 强制出站连接使用 IPv6 (解决纯 IPv6 VPS 连通性)
 # ============================================================
 
 RED='\033[0;31m'
@@ -90,7 +91,7 @@ check_env() {
         echo -e "${RED}错误: 不支持协议 $LOCAL_PROTO (仅支持 vless 或 vmess)${PLAIN}"; exit 1
     fi
     
-    # IPv6 DNS 优化
+    # IPv6 DNS 优化 (兼容性处理，防止无法解析)
     if ! curl -4 -s -m 5 http://ip.sb >/dev/null; then
         if ! grep -q "2001:4860:4860::8888" /etc/resolv.conf; then
             chattr -i /etc/resolv.conf
@@ -119,7 +120,7 @@ get_user_input() {
 }
 
 # ============================================================
-# 2. 核心注入逻辑 (动态适配 VLESS/VMess)
+# 2. 核心注入逻辑 (动态适配 VLESS/VMess + 强制 IPv6)
 # ============================================================
 inject_config() {
     echo -e "${YELLOW}>>> [配置] 获取节点数据与重构路由...${PLAIN}"
@@ -171,21 +172,24 @@ inject_config() {
         PATH_OUT="/${CODE}"
 
         # 4.1 追加用户到列表
-        # VMess 和 VLESS 都支持 id 和 email 字段，可以直接追加
         jq --arg uuid "$NEW_UUID" --arg email "$USER_EMAIL" \
            '. + [{"id": $uuid, "email": $email}]' \
            /tmp/new_users.json > /tmp/new_users.json.tmp && mv /tmp/new_users.json.tmp /tmp/new_users.json
 
-        # 4.2 生成出站 (Outbound) - 始终连接 ICMP9 远端 (VMess)
+        # 4.2 生成出站 (Outbound) - [核心: 增加 UseIPv6 策略]
         jq -n \
            --arg tag "$TAG_OUT" --arg host "$R_WSHOST" --arg port "$R_PORT" \
            --arg uuid "$REMOTE_UUID" --arg wshost "$R_WSHOST" --arg tls "$R_TLS" --arg path "$PATH_OUT" \
            '{
               "tag": $tag, "protocol": "vmess",
               "settings": { "vnext": [{"address": $host, "port": ($port | tonumber), "users": [{"id": $uuid}]}] },
-              "streamSettings": { "network": "ws", "security": $tls, 
-                "tlsSettings": (if $tls == "tls" then {"serverName": $wshost} else null end),
-                "wsSettings": { "path": $path, "headers": {"Host": $wshost} } }
+              "streamSettings": { 
+                  "network": "ws", 
+                  "security": $tls, 
+                  "tlsSettings": (if $tls == "tls" then {"serverName": $wshost} else null end),
+                  "wsSettings": { "path": $path, "headers": {"Host": $wshost} },
+                  "sockopt": { "domainStrategy": "UseIPv6" } 
+              }
            }' >> /tmp/outbound_block.json
 
         # 4.3 生成路由规则 (基于 User Email 分流)
@@ -201,7 +205,7 @@ inject_config() {
     jq -s '.' /tmp/outbound_block.json > /tmp/final_outbounds.json
     jq -s '.' /tmp/rule_block.json > /tmp/final_rules.json
     
-    # [核心修复] 注入用户到动态字段 (users 或 clients)
+    # 注入用户到动态字段 (users 或 clients)
     jq --slurpfile new_list /tmp/new_users.json \
        --argjson idx "$TARGET_INDEX" \
        --arg field "$USER_FIELD" \
@@ -221,7 +225,7 @@ inject_config() {
 # 3. 验证与输出
 # ============================================================
 finish_setup() {
-    # 1. 每次运行脚本前先清空旧的中转节点文件
+    # 清空旧节点文件
     > /root/xray_nodes2.txt
     ARGO_DOMAIN=$(echo "$ARGO_DOMAIN" | tr -d '\r\n ')
     echo -e "${YELLOW}>>> [重启] 应用配置...${PLAIN}"
@@ -232,7 +236,7 @@ finish_setup() {
     fi
 
     echo -e "\n${GREEN}======================================================${PLAIN}"
-    echo -e "${GREEN}   ICMP9 中转部署成功 (Port-Binding Mode)             ${PLAIN}"
+    echo -e "${GREEN}   ICMP9 中转部署成功 (IPv6 强制模式)                 ${PLAIN}"
     echo -e "${GREEN}======================================================${PLAIN}"
     echo -e "绑定端口 : ${YELLOW}${LOCAL_PORT}${PLAIN}"
     echo -e "绑定协议 : ${SKYBLUE}${LOCAL_PROTO^^}${PLAIN}"
@@ -257,19 +261,13 @@ finish_setup() {
             LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)"
         else
             LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${LOCAL_PATH}#${NODE_ALIAS}"
-          # 这里删除了那个LINK=${LINK// /%20}的代码
         fi
 
-        # === 新增：保存到文件 ===
-        # 1. 打印到屏幕
-        #echo -e "${SKYBLUE}${LINK}${PLAIN}"
-        # 2. 追加到 TXT 文件 (自动去除颜色代码和不可见字符)
+        # 保存到文件
         CLEAN_LINK=$(echo "$LINK" | tr -d '\r\n ')
-        #要标识就是echo "Tag: icmp9-${CODE} | Link: ${CLEAN_LINK}" >> /root/xray_nodes2.txt
         echo "$CLEAN_LINK" >> /root/xray_nodes2.txt
-        # =======================
     done
-    echo "请查看cat /root/xray_nodes2.txt"
+    echo "请查看: cat /root/xray_nodes2.txt"
     rm -f /tmp/uuid_map.txt
     echo -e "------------------------------------------------------"
 }
