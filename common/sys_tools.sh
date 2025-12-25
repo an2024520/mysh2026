@@ -2,9 +2,9 @@
 
 # ============================================================
 #  模块五：系统运维工具箱 (System Tools)
-#  - 状态: v2.3 (BBR / SSH防断 / 时间同步 / 证书 / 全日志 / 端口跳跃 / SSH加固)
+#  - 状态: v2.4 (SSH加固增强版 - 修复 Cloud-init 冲突)
 #  - 适用: Xray / Sing-box / Hysteria2 / Cloudflare Tunnel
-#  - 新增: SSH 内置默认公钥回落机制 (回车即用)
+#  - 更新: 自动清除 sshd_config.d 中的覆盖配置
 # ============================================================
 
 # 颜色定义
@@ -202,9 +202,8 @@ manage_port_hopping() {
     done
 }
 
-# --- 7. SSH 安全配置 (新) ---
+# --- 7. SSH 安全配置 (修复 Cloud-init 冲突) ---
 configure_ssh_security() {
-    # 内置默认 Key (用户提供)
     local DEFAULT_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILdsaJ9MTQU28cyRJZ3s32V1u9YDNUYRJvCSkztBDGsW eddsa-key-20251218"
 
     clear
@@ -244,7 +243,6 @@ configure_ssh_security() {
     fi
     
     if [[ -n "$pub_key" ]]; then
-        # 简单追加，不覆盖原有 Key
         if grep -q "${pub_key:0:20}" ~/.ssh/authorized_keys 2>/dev/null; then
             echo -e "${YELLOW}提示: 该公钥似乎已存在，跳过写入。${PLAIN}"
         else
@@ -256,14 +254,30 @@ configure_ssh_security() {
     
     echo -e "\n${YELLOW}第二步: 安全策略设置${PLAIN}"
     echo -e "当前 SSH 密码登录状态: $(grep "^PasswordAuthentication" /etc/ssh/sshd_config || echo "默认(Yes)")"
-    echo -e "${RED}警告: 禁用密码登录前，请务必确认您的私钥可以正常连接！${PLAIN}"
+    
+    # 检测是否存在冲突的子配置文件
+    if grep -r "PasswordAuthentication yes" /etc/ssh/sshd_config.d/ &> /dev/null; then
+        echo -e "${RED}警告: 检测到 sshd_config.d/ 目录下存在强制开启密码登录的配置！${PLAIN}"
+        echo -e "${RED}这通常由 Cloud-init 生成，会导致禁用密码失败。${PLAIN}"
+    fi
+
     read -p "是否禁用 SSH 密码登录? (y/n): " dis_pass
     
     if [[ "$dis_pass" == "y" ]]; then
         # 备份配置
         cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
         
-        # 启用公钥验证，禁用密码
+        # 1. 强力清理冲突的子配置 (Cloud-init 修复)
+        if [ -d /etc/ssh/sshd_config.d/ ]; then
+            echo -e "${YELLOW}正在扫描并清理冲突的子配置...${PLAIN}"
+            # 查找所有包含 PasswordAuthentication yes 的文件并重命名备份
+            grep -l "PasswordAuthentication yes" /etc/ssh/sshd_config.d/* 2>/dev/null | while read file; do
+                echo -e "  - 禁用冲突文件: $file"
+                mv "$file" "${file}.bak_disabled"
+            done
+        fi
+        
+        # 2. 修改主配置
         sed -i '/^PubkeyAuthentication/d' /etc/ssh/sshd_config
         sed -i '/^PasswordAuthentication/d' /etc/ssh/sshd_config
         sed -i '/^ChallengeResponseAuthentication/d' /etc/ssh/sshd_config
@@ -273,7 +287,7 @@ configure_ssh_security() {
         echo "ChallengeResponseAuthentication no" >> /etc/ssh/sshd_config
         
         systemctl restart sshd
-        echo -e "${GREEN}✅ 已禁用密码登录，并重启 SSH 服务。${PLAIN}"
+        echo -e "${GREEN}✅ 已禁用密码登录 (并清理了冲突配置)，重启 SSH 服务。${PLAIN}"
     else
         echo -e "${GRAY}已保留密码登录。${PLAIN}"
     fi
