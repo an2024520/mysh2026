@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点部署: Hysteria 2 (全能版 v2.0)
-#  - 整合: 自签证书 (Self-Signed) + 域名证书 (ACME)
-#  - 逻辑: 输入域名 -> 走 ACME / 留空 -> 走自签
-#  - 核心: 自动申请证书、自动配置 JSON、自动清理冲突
+#  Sing-box 节点部署: Hysteria 2 (智能全能版 v2.1)
+#  - 架构: Sing-box Inbound 模式
+#  - 证书: 智能识别 (留空->自签 / 输入域名->ACME)
+#  - 兼容: 完美适配 WARP 分流与 node_del 清理
 # ============================================================
 
 RED='\033[0;31m'
@@ -13,7 +13,7 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
-echo -e "${GREEN}>>> [Sing-box] Hysteria 2 全能部署脚本启动...${PLAIN}"
+echo -e "${GREEN}>>> [Sing-box] Hysteria 2 智能部署启动...${PLAIN}"
 
 # --- 1. 环境准备 ---
 CONFIG_FILE=""
@@ -108,11 +108,12 @@ elif [[ "$MODE" == "acme" ]]; then
     # === ACME 模式 ===
     echo -e "${YELLOW}正在使用 acme.sh 申请证书...${PLAIN}"
     
-    # 80 端口检查
+    # 80 端口检查与临时释放
+    WEB_STOPPED=""
     if lsof -i :80 | grep -q "LISTEN"; then
         echo -e "${YELLOW}检测到 80 端口占用，尝试临时停止 Web 服务...${PLAIN}"
-        systemctl stop nginx 2>/dev/null
-        systemctl stop apache2 2>/dev/null
+        if systemctl is-active --quiet nginx; then systemctl stop nginx; WEB_STOPPED="nginx"; fi
+        if systemctl is-active --quiet apache2; then systemctl stop apache2; WEB_STOPPED="apache2"; fi
     fi
 
     # 安装 acme.sh
@@ -125,6 +126,7 @@ elif [[ "$MODE" == "acme" ]]; then
     $ACME_BIN --issue -d "$DOMAIN" --standalone --force
     if [[ $? -ne 0 ]]; then
         echo -e "${RED}证书申请失败！请检查域名解析或防火墙。${PLAIN}"
+        [[ -n "$WEB_STOPPED" ]] && systemctl start "$WEB_STOPPED"
         exit 1
     fi
 
@@ -135,6 +137,9 @@ elif [[ "$MODE" == "acme" ]]; then
         --key-file       "$KEY_PATH"  \
         --fullchain-file "$CERT_PATH" \
         --reloadcmd     "systemctl restart sing-box"
+    
+    # 恢复 Web 服务
+    [[ -n "$WEB_STOPPED" ]] && systemctl start "$WEB_STOPPED"
         
     INSECURE_BOOL="false"
     SNI_VAL="$DOMAIN"
@@ -214,6 +219,7 @@ if systemctl is-active --quiet sing-box; then
     echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
+    echo -e "${SKYBLUE}提示: 您可以使用 WARP 脚本将其分流接管。${PLAIN}"
 else
     echo -e "${RED}启动失败！请检查日志: journalctl -u sing-box -e${PLAIN}"
 fi
