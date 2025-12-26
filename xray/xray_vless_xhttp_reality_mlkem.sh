@@ -1,5 +1,5 @@
 #!/bin/bash
-
+echo "v1.0"
 # ============================================================
 #  模块四：VLESS + XHTTP + Reality + ENC (VLESS内层加密版)
 #  - 协议: VLESS (开启 vlessenc 加密/填充)
