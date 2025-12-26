@@ -193,7 +193,8 @@ write_warp_config() {
     local TMP_CONF=$(mktemp)
     
     # 初始化
-    jq 'if .endpoints == null then .endpoints = [] else . end | if .outbounds == null then .outbounds = [] else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+   # 确保 endpoints 和 outbounds 数组存在
+    jq '.endpoints = (.endpoints // []) | .outbounds = (.outbounds // [])' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
     # 清理旧配置
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .type == "wireguard"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
