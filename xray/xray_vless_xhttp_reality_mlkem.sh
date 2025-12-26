@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  模块四：VLESS + XHTTP + Reality + ENC (抗量子加密版)
-#  - 协议: VLESS + XHTTP (HTTP/3)
-#  - 安全: Reality + ML-KEM-768 (Quantum-Resistant)
+#  模块四：VLESS + XHTTP + Reality + ENC (VLESS内层加密版)
+#  - 协议: VLESS (开启 vlessenc 加密/填充)
+#  - 传输: XHTTP (HTTP/3)
+#  - 伪装: Reality
 #  - 核心要求: Xray-core v25.x+
 # ============================================================
 
@@ -18,7 +19,7 @@ PLAIN='\033[0m'
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 XRAY_BIN="/usr/local/bin/xray_core/xray"
 
-echo -e "${GREEN}>>> [模块四] 部署抗量子节点: VLESS + XHTTP + Reality + ML-KEM ...${PLAIN}"
+echo -e "${GREEN}>>> [模块四] 部署 VLESS-ENC (内层加密) + XHTTP + Reality ...${PLAIN}"
 
 # 1. 环境与核心版本检查
 if [[ ! -f "$XRAY_BIN" ]]; then
@@ -31,16 +32,13 @@ if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
     apt update -y && apt install -y jq openssl
 fi
 
-# 检查是否支持 ML-KEM (ENC)
-IS_MLKEM_SUPPORTED=false
-if "$XRAY_BIN" help | grep -q "mlkem768"; then
-    IS_MLKEM_SUPPORTED=true
-    echo -e "${GREEN}>>> 检测到 Xray 核心支持 ML-KEM-768 抗量子加密！${PLAIN}"
+# 检查 vlessenc 命令支持 (Xray v25+ 特性)
+if "$XRAY_BIN" help | grep -q "vlessenc"; then
+    echo -e "${GREEN}>>> 检测到 Xray 核心支持 VLESS Encryption (ENC)！${PLAIN}"
 else
-    echo -e "${RED}警告: 当前 Xray 核心版本过低，不支持 ML-KEM 抗量子加密。${PLAIN}"
-    echo -e "${YELLOW}>>> 将自动回退到标准 X25519 算法。${PLAIN}"
-    echo -e "${YELLOW}>>> 请升级 Xray 核心至 v25.x+ 以启用抗量子特性。${PLAIN}"
-    sleep 2
+    echo -e "${RED}致命错误: 当前 Xray 核心不支持 vlessenc 命令。${PLAIN}"
+    echo -e "${RED}请升级到 Xray-core v25.9+ 版本。${PLAIN}"
+    exit 1
 fi
 
 # 2. 配置文件初始化
@@ -70,15 +68,11 @@ fi
 
 # 3. 用户配置 (自动/手动)
 if [[ "$AUTO_SETUP" == "true" ]]; then
-    # 自动模式
-    echo -e "${YELLOW}>>> [自动模式] 读取参数...${PLAIN}"
-    PORT="${PORT:-2088}" # 默认抗量子端口
+    PORT="${PORT:-2088}" 
     echo -e "    端口 (PORT): ${GREEN}${PORT}${PLAIN}"
-    # [审计修正] 强制使用 Cloudflare，Google 在国内不可用
-    SNI="www.cloudflare.com" 
+    SNI="www.microsoft.com"
 else
-    # 手动模式
-    echo -e "${YELLOW}--- 配置 XHTTP + ML-KEM 参数 ---${PLAIN}"
+    echo -e "${YELLOW}--- 配置参数 ---${PLAIN}"
     while true; do
         read -p "请输入监听端口 (默认 2088): " CUSTOM_PORT
         [[ -z "$CUSTOM_PORT" ]] && PORT=2088 && break
@@ -90,51 +84,55 @@ else
         fi
     done
 
-    echo -e "${YELLOW}请选择伪装域名 (SNI) - XHTTP 建议选择支持 HTTP/3 的大厂:${PLAIN}"
-    # [审计修正] 替换 Google 为 Microsoft (Azure CDN 连通性佳)
-    echo -e "  1. www.microsoft.com (Microsoft - 推荐)"
-    echo -e "  2. www.cloudflare.com (CF - 稳健)"
-    echo -e "  3. 手动输入"
+    echo -e "${YELLOW}请选择伪装域名 (SNI):${PLAIN}"
+    echo -e "  1. www.microsoft.com (推荐)"
+    echo -e "  2. www.cloudflare.com"
     read -p "选择: " s
     case $s in
         2) SNI="www.cloudflare.com" ;;
-        3) read -p "输入域名: " SNI; [[ -z "$SNI" ]] && SNI="www.microsoft.com" ;;
         *) SNI="www.microsoft.com" ;;
     esac
 fi
 
-# 4. 生成密钥 (抗量子核心逻辑)
-echo -e "${YELLOW}正在生成密钥对 (ENC)...${PLAIN}"
+# 4. 生成密钥 (关键修正)
+echo -e "${YELLOW}正在生成密钥...${PLAIN}"
 
 UUID=$($XRAY_BIN uuid)
 SHORT_ID=$(openssl rand -hex 4)
 XHTTP_PATH="/$(openssl rand -hex 6)"
 
-if [[ "$IS_MLKEM_SUPPORTED" == "true" ]]; then
-    # 生成 ML-KEM-768 密钥
-    # 格式通常为 "Private key: ... \n Public key: ..."
-    RAW_KEYS=$($XRAY_BIN mlkem768)
-    KEY_TYPE_LABEL="ML-KEM-768 (Anti-Quantum)"
-else
-    # 回退到 X25519
-    RAW_KEYS=$($XRAY_BIN x25519)
-    KEY_TYPE_LABEL="X25519 (Standard)"
+# [关键修正1] Reality 依然使用标准的 X25519
+RAW_REALITY=$($XRAY_BIN x25519)
+PRIVATE_KEY=$(echo "$RAW_REALITY" | grep "Private" | awk -F ": " '{print $2}' | tr -d ' \r\n')
+PUBLIC_KEY=$(echo "$RAW_REALITY" | grep "Public" | awk -F ": " '{print $2}' | tr -d ' \r\n')
+
+# [关键修正2] 生成 VLESS ENC 密钥 (模仿 argosbx.sh 逻辑)
+# vlessenc 输出示例: {"decryption":"...","encryption":"..."}
+RAW_ENC=$($XRAY_BIN vlessenc)
+# 提取 decryption (用于服务端配置文件)
+SERVER_DECRYPTION=$(echo "$RAW_ENC" | jq -r '.decryption')
+# 提取 encryption (用于客户端分享链接)
+CLIENT_ENCRYPTION=$(echo "$RAW_ENC" | jq -r '.encryption')
+
+if [[ -z "$SERVER_DECRYPTION" ]] || [[ -z "$CLIENT_ENCRYPTION" ]]; then
+    echo -e "${RED}错误: 无法生成 VLESS ENC 密钥！${PLAIN}"
+    exit 1
 fi
 
-# [审计修正] 精确匹配 Public key，防止误匹配 Password 字段
-PRIVATE_KEY=$(echo "$RAW_KEYS" | grep "Private" | awk -F ": " '{print $2}' | tr -d ' \r\n')
-PUBLIC_KEY=$(echo "$RAW_KEYS" | grep "Public" | awk -F ": " '{print $2}' | tr -d ' \r\n')
+echo -e "VLESS Enc Key : ${SKYBLUE}${SERVER_DECRYPTION:0:10}...${PLAIN}"
+echo -e "Reality Key   : ${SKYBLUE}X25519${PLAIN}"
 
 # 5. 注入节点配置
 NODE_TAG="Xray-XHTTP-ENC-${PORT}"
 
-# 清理旧配置 (同端口或同Tag)
+# 清理旧配置
 tmp_clean=$(mktemp)
 jq --argjson p "$PORT" --arg tag "$NODE_TAG" \
    'del(.inbounds[]? | select(.port == $p or .tag == $tag))' \
    "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
 
 # 构建节点 JSON
+# 注意: settings.decryption 填入 SERVER_DECRYPTION
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -143,6 +141,7 @@ NODE_JSON=$(jq -n \
     --arg sni "$SNI" \
     --arg pk "$PRIVATE_KEY" \
     --arg sid "$SHORT_ID" \
+    --arg deckey "$SERVER_DECRYPTION" \
     '{
       tag: $tag,
       listen: "0.0.0.0",
@@ -150,7 +149,7 @@ NODE_JSON=$(jq -n \
       protocol: "vless",
       settings: {
         clients: [{id: $uuid, flow: ""}],
-        decryption: "none"
+        decryption: $deckey
       },
       streamSettings: {
         network: "xhttp",
@@ -171,7 +170,6 @@ NODE_JSON=$(jq -n \
     }')
 
 tmp_add=$(mktemp)
-# [修复] 变量名统一为 new_node
 jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp_add" && mv "$tmp_add" "$CONFIG_FILE"
 
 # 6. 重启与输出
@@ -180,21 +178,20 @@ sleep 2
 
 if systemctl is-active --quiet xray; then
     PUBLIC_IP=$(curl -s4 ifconfig.me)
-    # 链接构造
-    SHARE_LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&headerType=none&type=xhttp&sni=${SNI}&sid=${SHORT_ID}&path=${XHTTP_PATH}&fp=chrome#${NODE_TAG}"
+    # [关键修正3] 分享链接中 encryption 参数填入 CLIENT_ENCRYPTION
+    SHARE_LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=${CLIENT_ENCRYPTION}&pbk=${PUBLIC_KEY}&headerType=none&type=xhttp&sni=${SNI}&sid=${SHORT_ID}&path=${XHTTP_PATH}&fp=chrome#${NODE_TAG}"
 
     echo -e ""
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}    [ENC] 抗量子节点部署成功！          ${PLAIN}"
+    echo -e "${GREEN}    [ENC] VLESS加密版 部署成功！        ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "节点 Tag    : ${YELLOW}${NODE_TAG}${PLAIN}"
-    echo -e "协议        : ${SKYBLUE}VLESS + XHTTP + Reality${PLAIN}"
-    echo -e "加密算法    : ${RED}${KEY_TYPE_LABEL}${PLAIN}"
+    echo -e "核心协议    : ${SKYBLUE}VLESS (ENC Enabled)${PLAIN}"
+    echo -e "传输协议    : ${SKYBLUE}XHTTP + Reality${PLAIN}"
     echo -e "监听端口    : ${YELLOW}${PORT}${PLAIN}"
-    echo -e "Path        : ${YELLOW}${XHTTP_PATH}${PLAIN}"
     echo -e "SNI         : ${YELLOW}${SNI}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "🚀 [通用分享链接] (需最新版客户端):"
+    echo -e "🚀 [通用分享链接] (需 Xray v25+ 客户端):"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
     
@@ -213,6 +210,7 @@ if systemctl is-active --quiet xray; then
   flow: ""
   servername: ${SNI}
   client-fingerprint: chrome
+  # 注意: 目前 Mihomo 可能尚未完全支持 VLESS ENC 参数，请以客户端实际支持为准
   xhttp-opts:
     path: ${XHTTP_PATH}
     headers:
@@ -228,6 +226,5 @@ EOF
     fi
 else
     echo -e "${RED}启动失败！请检查日志 (journalctl -u xray -e) ${PLAIN}"
-    echo -e "${RED}可能原因: 您的 Xray 核心版本不支持配置中的 ML-KEM 密钥格式。${PLAIN}"
     [[ "$AUTO_SETUP" == "true" ]] && exit 1
 fi
