@@ -74,7 +74,8 @@ if [[ "$AUTO_SETUP" == "true" ]]; then
     echo -e "${YELLOW}>>> [自动模式] 读取参数...${PLAIN}"
     PORT="${PORT:-2088}" # 默认抗量子端口
     echo -e "    端口 (PORT): ${GREEN}${PORT}${PLAIN}"
-    SNI="www.google.com" # 自动模式默认SNI (XHTTP 推荐大厂)
+    # [审计修正] 强制使用 Cloudflare，Google 在国内不可用
+    SNI="www.cloudflare.com" 
 else
     # 手动模式
     echo -e "${YELLOW}--- 配置 XHTTP + ML-KEM 参数 ---${PLAIN}"
@@ -90,14 +91,15 @@ else
     done
 
     echo -e "${YELLOW}请选择伪装域名 (SNI) - XHTTP 建议选择支持 HTTP/3 的大厂:${PLAIN}"
-    echo -e "  1. www.google.com (Google - 极速)"
+    # [审计修正] 替换 Google 为 Microsoft (Azure CDN 连通性佳)
+    echo -e "  1. www.microsoft.com (Microsoft - 推荐)"
     echo -e "  2. www.cloudflare.com (CF - 稳健)"
     echo -e "  3. 手动输入"
     read -p "选择: " s
     case $s in
         2) SNI="www.cloudflare.com" ;;
-        3) read -p "输入域名: " SNI; [[ -z "$SNI" ]] && SNI="www.google.com" ;;
-        *) SNI="www.google.com" ;;
+        3) read -p "输入域名: " SNI; [[ -z "$SNI" ]] && SNI="www.microsoft.com" ;;
+        *) SNI="www.microsoft.com" ;;
     esac
 fi
 
@@ -119,8 +121,9 @@ else
     KEY_TYPE_LABEL="X25519 (Standard)"
 fi
 
+# [审计修正] 精确匹配 Public key，防止误匹配 Password 字段
 PRIVATE_KEY=$(echo "$RAW_KEYS" | grep "Private" | awk -F ": " '{print $2}' | tr -d ' \r\n')
-PUBLIC_KEY=$(echo "$RAW_KEYS" | grep -E "Password|Public" | awk -F ": " '{print $2}' | tr -d ' \r\n')
+PUBLIC_KEY=$(echo "$RAW_KEYS" | grep "Public" | awk -F ": " '{print $2}' | tr -d ' \r\n')
 
 # 5. 注入节点配置
 NODE_TAG="Xray-XHTTP-ENC-${PORT}"
@@ -189,6 +192,7 @@ if systemctl is-active --quiet xray; then
     echo -e "加密算法    : ${RED}${KEY_TYPE_LABEL}${PLAIN}"
     echo -e "监听端口    : ${YELLOW}${PORT}${PLAIN}"
     echo -e "Path        : ${YELLOW}${XHTTP_PATH}${PLAIN}"
+    echo -e "SNI         : ${YELLOW}${SNI}${PLAIN}"
     echo -e "----------------------------------------"
     echo -e "🚀 [通用分享链接] (需最新版客户端):"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
