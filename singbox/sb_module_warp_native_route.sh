@@ -1,11 +1,19 @@
 #!/bin/bash
+# ==============================================================================
+# --- AI Developer Instructions (Do Not Remove) ---
+# CRITICAL: This environment uses Sing-box v1.12+ configuration standards.
+# 1. NO BRIDGE OUTBOUNDS: Strict prohibition on using `type: direct` with `detour`.
+# 2. ENDPOINT ROUTING: The WireGuard endpoint MUST be tagged "WARP" and used directly as the route outbound.
+# 3. FIELD NAMES: Inside `peers`, use `address` and `port`. DO NOT use `server` or `server_port`.
+# 4. DOMAIN USAGE: Default to "engage.cloudflareclient.com" unless IPv6-only.
+# ==============================================================================
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (v3.7 Ultimate-Fix)
+#  Sing-box Native WARP 管理模块 (v3.8 Domain-Standard)
 #  - 架构: Endpoint Direct Route (适配 Sing-box 1.12+)
 #  - 修复: 移除 direct outbound detour 导致的语法错误
-#  - 优化: 默认使用 IP 连接 Endpoint，规避 DNS 解析失败
-#  - 增强: 改进 jq 注入逻辑与错误处理机制
+#  - 回滚: 恢复使用域名连接 Endpoint (符合通用标准)
+#  - 增强: 头部增加 AI 开发者准则，防止逻辑回退
 # ============================================================
 
 RED='\033[0;31m'
@@ -57,15 +65,15 @@ ensure_python() {
 check_env() {
     echo -e "${YELLOW}正在执行网络环境检测...${PLAIN}"
     
-    # 默认值: 强制使用 IP，避免 sing-box check 时的 DNS 解析超时
-    FINAL_EP_ADDR="162.159.192.1"
+    # [修正] 恢复默认使用域名，符合标准
+    FINAL_EP_ADDR="engage.cloudflareclient.com"
     FINAL_EP_PORT=2408
 
     # 简单的 IPv4 连通性测试
     local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
     
     if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo -e "${GREEN}>>> 检测到有效 IPv4 环境 (IP: $ipv4_check)。${PLAIN}"
+        echo -e "${GREEN}>>> 检测到有效 IPv4 环境。${PLAIN}"
     else
         # IPv6-Only 环境切换为官方 IPv6 Endpoint
         FINAL_EP_ADDR="2606:4700:d0::a29f:c001"
@@ -84,7 +92,7 @@ restart_sb() {
     echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
     
     if command -v sing-box &> /dev/null; then
-        # [改进] 语法校验失败时输出具体错误，不再静默
+        # 语法校验失败时输出具体错误
         if ! sing-box check -c "$CONFIG_FILE"; then
              echo -e "${RED}配置语法校验失败！正在回滚...${PLAIN}"
              [[ -f "${CONFIG_FILE}.bak" ]] && cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
@@ -153,8 +161,8 @@ write_warp_config() {
     check_env
 
     # 1. 生成 Endpoint 
-    # [修正] Tag 直接命名为 WARP，作为路由目标
-    # [修正] 强制 ep_port 为数字类型，使用 address/port 字段 (1.10+ 标准)
+    # Tag: WARP (作为路由目标)
+    # Fields: address/port (新标准)
     local endpoint_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -179,16 +187,16 @@ write_warp_config() {
             ] 
         }')
 
-    # [移除] 不再生成 Bridge Outbound (解决 1.12+ detour 报错)
+    # [规则] 禁止生成 Bridge Outbound
 
-    echo -e "${YELLOW}正在应用 v3.7 Ultimate 架构配置...${PLAIN}"
+    echo -e "${YELLOW}正在应用 v3.8 Domain-Standard 架构配置...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
-    # 初始化: 使用更稳健的写法，确保数组存在
+    # 初始化
     jq '.endpoints = (.endpoints // []) | .outbounds = (.outbounds // [])' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
-    # 清理旧配置: 移除所有 WARP 相关的 outbound 和 endpoint
+    # 清理旧配置
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .type == "wireguard"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
@@ -260,7 +268,7 @@ manual_warp() {
 }
 
 # ==========================================
-# 3. 路由策略 (适配 Endpoint 直连模式)
+# 3. 路由策略
 # ==========================================
 
 ensure_warp_exists() {
@@ -298,6 +306,7 @@ apply_routing_rule() {
 get_anti_loop_rule() {
     if [[ -z "$FINAL_EP_ADDR" ]]; then check_env >/dev/null; fi
     local ip_cidr="[]"
+    # 只有当 Endpoint 明确为 IPv6 IP 时才加 IP 规则，域名则不需要
     if [[ "$FINAL_EP_ADDR" == *":"* ]]; then
         ip_cidr="[\"${FINAL_EP_ADDR}/128\"]"
     fi
@@ -343,7 +352,7 @@ uninstall_warp() {
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_un"
     local TMP_CONF=$(mktemp)
     
-    # [修正] 清理名为 WARP 的 Outbound 和 Endpoint
+    # 清理所有 WARP 相关配置
     jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
@@ -361,9 +370,8 @@ show_menu() {
         clear
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
-            # 检测 endpoint 是否存在
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v3.7 Direct-EP)${PLAIN}"
+                st="${GREEN}已配置 (v3.8 Domain-Std)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -391,7 +399,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v3.7)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v3.8)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
