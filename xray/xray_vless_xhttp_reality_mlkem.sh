@@ -132,7 +132,6 @@ jq --argjson p "$PORT" --arg tag "$NODE_TAG" \
    "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
 
 # 构建节点 JSON
-# 注意: ML-KEM 密钥直接填入 privateKey 字段即可，Xray 会自动识别
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -169,7 +168,8 @@ NODE_JSON=$(jq -n \
     }')
 
 tmp_add=$(mktemp)
-jq --argjson new "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp_add" && mv "$tmp_add" "$CONFIG_FILE"
+# [修复] 变量名统一为 new_node
+jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp_add" && mv "$tmp_add" "$CONFIG_FILE"
 
 # 6. 重启与输出
 systemctl restart xray
@@ -177,7 +177,7 @@ sleep 2
 
 if systemctl is-active --quiet xray; then
     PUBLIC_IP=$(curl -s4 ifconfig.me)
-    # 链接构造: 暂时使用标准格式，ML-KEM 兼容性取决于客户端识别 public key 长度
+    # 链接构造
     SHARE_LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&headerType=none&type=xhttp&sni=${SNI}&sid=${SHORT_ID}&path=${XHTTP_PATH}&fp=chrome#${NODE_TAG}"
 
     echo -e ""
