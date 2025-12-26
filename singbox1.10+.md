@@ -27,7 +27,6 @@ Deprecated:
     }
   ]
 }
-
 New:
 {
   "inbounds": [
@@ -50,6 +49,7 @@ New:
     }
   ]
 }
+
 
 
 
