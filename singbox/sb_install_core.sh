@@ -117,7 +117,7 @@ mkdir -p "$CONF_DIR"
 mkdir -p "$LOG_DIR"
 touch "${LOG_DIR}/access.log"
 touch "${LOG_DIR}/error.log"
-chown -R nobody:nogroup "$LOG_DIR" 2>/dev/null || chown -R nobody:nobody "$LOG_DIR"
+chown -R root:root "$LOG_DIR"
 
 # 生成基础 config.json (如果不存在)
 # 这里生成一个"最小可用配置"，包含日志和一个 Direct 出站，防止启动报错
