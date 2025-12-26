@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Xray WARP Native Route 管理面板 (v3.7 Ultimate-Perfect)
+#  Xray WARP Native Route 管理面板 (v3.96 Strict-Fix)
 #  - 核心逻辑: 移植 Sing-box 的正则清洗算法，完美处理 Reserved 格式
-#  - 关键修复: 包含 v3.6 的“指定节点接管”Tag 提取修复
+#  - 关键修复: 仅修复 auto_main 映射逻辑，保留所有原版注释和结构
 #  - 体验升级: 自动回填凭证 + IPv4 强制补全 + 智能格式化
 # ============================================================
 
@@ -333,8 +333,10 @@ auto_main() {
     ensure_warp_exists || exit 1
     
     local rule=""
+    # [核心修复] 对齐 auto_deploy.sh 的参数逻辑 (v3.96 Fix)
     case "$WARP_MODE_SELECT" in
-        2) rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "ip": ["0.0.0.0/0"], "outboundTag": "warp-out" }') ;;
+        1) rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "ip": ["0.0.0.0/0"], "outboundTag": "warp-out" }') ;;
+        2) rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "ip": ["::/0"], "outboundTag": "warp-out" }') ;;
         3) [[ -n "$WARP_INBOUND_TAGS" ]] && rule=$(jq -n --argjson t "$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')" '{ "type": "field", "inboundTag": $t, "outboundTag": "warp-out" }') ;;
         4) rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "outboundTag": "warp-out" }') ;;
         *) rule=$(jq -n '{ "type": "field", "domain": ["geosite:netflix","geosite:disney","geosite:openai","geosite:google","geosite:youtube"], "outboundTag": "warp-out" }') ;;
