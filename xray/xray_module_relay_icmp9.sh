@@ -13,6 +13,8 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
+echo "脚本版本号V3.6"
+
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
 API_CONFIG="https://api.icmp9.com/config/config.txt"
