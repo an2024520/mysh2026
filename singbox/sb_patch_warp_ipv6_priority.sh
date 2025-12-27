@@ -1,15 +1,13 @@
 #!/bin/bash
-echo "v5.7"
-sleep 5
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
-# Version: v5.7 (Absolute Pure-v6 Edition)
+# Version: v5.8 (Route Strategy Injection)
 # 
-# Critical Changes:
-#   1. Endpoint: REMOVED auto-detection. FORCED to use IPv6 Endpoint IP.
-#      (Reason: Dirty IPv4 might pass curl check but fail WARP handshake).
-#   2. DNS: Enforces Google/CF IPv6 DNS (No IPv4 fallback).
-#   3. Route: IPv6 -> Direct | All Others -> WARP.
+# Critical Fix:
+#   1. Route: Injects "domain_strategy": "prefer_ipv6" into the [route] block.
+#      - This forces Sing-box to resolve domains BEFORE matching rules.
+#      - Enables "ip_version": 6 rules to actually match domains like "ip.sb".
+#   2. Logic: Uses precise IP version matching instead of catch-all funnels.
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -52,16 +50,12 @@ ensure_python() {
     fi
 }
 
-# [v5.7] 强制环境设定：忽略脏 IPv4，直接锁定 IPv6
 check_env() {
-    echo -e "${YELLOW}正在配置网络环境 (强制 Pure IPv6 模式)...${PLAIN}"
-    # 不再检测 curl -4，直接视为 IPv4 不可用/不可信
-    # 强制使用 Cloudflare 官方 IPv6 Endpoint IP
+    echo -e "${YELLOW}正在执行网络环境检测...${PLAIN}"
+    # 强制 Pure IPv6 模式
     FINAL_EP_ADDR="2606:4700:d0::a29f:c001"
     FINAL_EP_PORT=2408
-    
     echo -e "${SKYBLUE}>>> Endpoint 已锁定: ${FINAL_EP_ADDR} (规避脏 IPv4)${PLAIN}"
-    
     export FINAL_EP_ADDR
     export FINAL_EP_PORT
 }
@@ -136,7 +130,6 @@ write_warp_config() {
     [[ -n "$v6" && "$v6" != "null" ]] && addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]')
     check_env
     
-    # Endpoint 结构 (Sing-box v1.12+ Standard)
     local endpoint_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -253,9 +246,11 @@ get_anti_loop_rule() {
     jq -n --argjson ip "$ip_cidr" --arg dt "$direct_tag" '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "ip_cidr": $ip, "outbound": $dt }'
 }
 
+# --- [v5.8] DNS 修正 + 路由策略注入 ---
 fix_dns_strict_v6() {
     local TMP_CONF=$(mktemp)
-    # [关键] 仅使用 Google/CF IPv6 DNS，彻底放弃 IPv4 DNS
+    
+    # 1. 强制 Pure IPv6 DNS (Google/CF v6)
     local clean_dns='{
         "servers": [
             {"tag": "google_v6", "type": "udp", "server": "2001:4860:4860::8888"},
@@ -267,9 +262,14 @@ fix_dns_strict_v6() {
         "strategy": "prefer_ipv6"
     }'
     
-    echo -e "${YELLOW}>>> 正在配置纯净 IPv6 DNS (规避脏 IPv4)...${PLAIN}"
+    echo -e "${YELLOW}>>> [Step 1] 配置纯净 IPv6 DNS (规避脏 IPv4)...${PLAIN}"
     jq --argjson dns "$clean_dns" '.dns = $dns' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq '.route.default_domain_resolver = "google_v6"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+
+    # 2. [关键] 注入 domain_strategy: prefer_ipv6 到 route 模块
+    # 这强制 Sing-box 在匹配路由规则前解析域名，从而让 ip_version 规则生效
+    echo -e "${YELLOW}>>> [Step 2] 注入路由层域名解析策略...${PLAIN}"
+    jq '.route.domain_strategy = "prefer_ipv6"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 }
 
 mode_stream() {
@@ -292,7 +292,7 @@ mode_global() {
     echo -e "${GREEN}全局接管策略已应用。${PLAIN}"
 }
 
-# [v5.7] 强制使用 Pure IPv6 逻辑
+# [v5.8] 域名解析修正版
 mode_flexible_node() {
     ensure_warp_exists || return
     
@@ -332,7 +332,7 @@ mode_flexible_node() {
     echo -e " c. 双栈全部走 WARP (完全隐身)"
     read -p "请选择: " sub
     
-    # 强制修正 DNS 为 Pure IPv6 模式
+    # [关键修复] 同时修复 DNS 和 Route Strategy
     fix_dns_strict_v6
     
     local direct_tag=$(get_direct_tag)
@@ -341,22 +341,22 @@ mode_flexible_node() {
     
     case "$sub" in
         a)
-            # [Xray V1 逻辑复刻 - 漏斗模式]
-            # 1. 选中节点 -> OpenAI -> WARP
-            # 2. 选中节点 -> IPv6 -> Direct (优先放行)
-            # 3. 选中节点 -> 剩余(IPv4/Domain) -> WARP (强制捕获)
-            # 4. 全局 IPv4 -> WARP (本地流量兜底)
+            # 策略：有了 route.domain_strategy="prefer_ipv6" 后，
+            # 域名 "ip.sb" 会在路由匹配前被解析为 AAAA (2606...)
+            # 因此它会命中 ip_version: 6 -> Direct。
+            # 而 ipv4.google.com 会解析为 A -> 命中 ip_version: 4 -> WARP。
+            # 无需 Catch-all，逻辑完美闭环。
             rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
                 { "inbound": $tags, "domain_suffix": ["openai.com","ai.com","chatgpt.com"], "outbound": "WARP" },
                 { "inbound": $tags, "ip_version": 6, "outbound": $dt },
-                { "inbound": $tags, "outbound": "WARP" },
-                { "ip_version": 4, "outbound": "WARP" }
+                { "inbound": $tags, "ip_version": 4, "outbound": "WARP" },
+                { "ip_version": 4, "outbound": "WARP" } 
             ]')
             ;;
         b)
             rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
                 { "inbound": $tags, "ip_version": 6, "outbound": "WARP" },
-                { "inbound": $tags, "outbound": $dt }
+                { "inbound": $tags, "ip_version": 4, "outbound": $dt }
             ]')
             ;;
         *)
@@ -413,7 +413,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v5.7 Pure-v6)${PLAIN}"
+                st="${GREEN}已配置 (v5.8 Route-Res)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -443,7 +443,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v5.7)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v5.8)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
@@ -459,9 +459,8 @@ auto_main() {
         local anti_loop=$(get_anti_loop_rule)
         local rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
             { "inbound": $tags, "domain_suffix": ["openai.com"], "outbound": "WARP" },
-            { "inbound": $tags, "ip_version": 6, "outbound": $dt },
-            { "inbound": $tags, "outbound": "WARP" },
-            { "ip_version": 4, "outbound": "WARP" }
+            { "inbound": $tags, "ip_version": 4, "outbound": "WARP" },
+            { "inbound": $tags, "ip_version": 6, "outbound": $dt }
         ]')
         local TMP_CONF=$(mktemp)
         jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
