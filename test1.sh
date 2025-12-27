@@ -149,8 +149,162 @@ view_logs() {
     fi
 }
 
-# --- 6 & 7. manage_swap / manage_port_hopping (保持不变，略) ---
-# （内容同之前完整版，这里省略以节省篇幅，实际脚本请保留）
+# --- 6. Swap / ZRAM 虚拟内存管理 ---
+manage_swap() {
+    if [[ -d "/proc/vz" ]] || systemd-detect-virt 2>/dev/null | grep -Eq "lxc|docker|container"; then
+        echo -e "${RED}检测到容器或 OpenVZ，不支持传统 Swap${PLAIN}"
+        read -p "按回车继续..."
+        return
+    fi
+
+    while true; do
+        clear
+        echo -e "${BLUE}========= 虚拟内存管理 (Swap / ZRAM) =========${PLAIN}"
+        echo -e "当前状态:"
+        swapon --show | cat || echo -e "${YELLOW}无传统 Swap${PLAIN}"
+        if [[ -d /sys/block/zram0 ]]; then
+            echo -e "${GREEN}ZRAM 已启用${PLAIN}"
+        fi
+        echo ""
+        echo -e " ${GREEN}1.${PLAIN} 添加传统 Swap 文件"
+        echo -e " ${GREEN}2.${PLAIN} 启用 ZRAM（推荐 SSD，低内存 VPS）"
+        echo -e " ${RED}3.${PLAIN} 删除传统 Swap"
+        echo -e " ${RED}4.${PLAIN} 禁用 ZRAM"
+        echo -e " ${GRAY}0.${PLAIN} 返回上一级"
+        echo ""
+        read -p "请选择: " choice
+
+        case "$choice" in
+            1)
+                read -p "请输入 Swap 大小 (MB，例如 1024): " size
+                if ! [[ "$size" =~ ^[0-9]+$ ]] || [[ "$size" -le 0 ]]; then
+                    echo -e "${RED}错误: 请输入有效的正整数！${PLAIN}"
+                    read -p "按回车继续..."; continue
+                fi
+                if grep -q "swap" /etc/fstab; then
+                    echo -e "${RED}错误: 已存在 Swap 配置，请先删除！${PLAIN}"
+                    read -p "按回车继续..."; continue
+                fi
+
+                # 检查磁盘空间（简单防护）
+                avail=$(df / | tail -1 | awk '{print $4}')
+                if [[ $avail -lt $((size * 1024)) ]]; then
+                    echo -e "${RED}警告: 根分区可用空间不足，可能创建失败！${PLAIN}"
+                fi
+
+                echo -e "${YELLOW}正在创建 ${size}MB Swap 文件...${PLAIN}"
+                fallocate -l "${size}M" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count="$size" status=progress
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+                echo '/swapfile none swap defaults 0 0' >> /etc/fstab
+                echo -e "${GREEN}✅ ${size}MB Swap 添加成功！${PLAIN}"
+                swapon --show
+                ;;
+            2)
+                if [[ -d /sys/block/zram0 ]]; then
+                    echo -e "${YELLOW}ZRAM 已存在${PLAIN}"
+                else
+                    modprobe zram
+                    echo lz4 > /sys/block/zram0/comp_algorithm
+                    echo 2G > /sys/block/zram0/disksize   # 可自行修改大小
+                    mkswap /dev/zram0
+                    swapon /dev/zram0 -p 32767           # 高优先级
+                    echo '/dev/zram0 none swap defaults,pri=32767 0 0' >> /etc/fstab
+                    echo -e "${GREEN}✅ ZRAM (2GB 压缩内存，高优先级) 已启用${PLAIN}"
+                fi
+                ;;
+            3)
+                if grep -q "swap" /etc/fstab; then
+                    echo -e "${YELLOW}正在删除传统 Swap...${PLAIN}"
+                    swapoff -a
+                    sed -i '/swap/d' /etc/fstab
+                    rm -f /swapfile
+                    echo -e "${GREEN}✅ 传统 Swap 已成功删除${PLAIN}"
+                else
+                    echo -e "${RED}未检测到传统 Swap${PLAIN}"
+                fi
+                ;;
+            4)
+                if [[ -d /sys/block/zram0 ]]; then
+                    swapoff /dev/zram0
+                    echo 1 > /sys/block/zram0/reset
+                    rmmod zram
+                    sed -i '/zram/d' /etc/fstab
+                    echo -e "${GREEN}✅ ZRAM 已禁用${PLAIN}"
+                else
+                    echo -e "${RED}未检测到 ZRAM${PLAIN}"
+                fi
+                ;;
+            0) return ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+        read -p "按回车继续..."
+    done
+}
+
+# --- 7. UDP 端口跳跃管理 (nftables 现代版) ---
+manage_port_hopping() {
+    if ! command -v nft >/dev/null 2>&1; then
+        echo -e "${YELLOW}正在安装 nftables...${PLAIN}"
+        apt update && apt install -y nftables || yum install -y nftables || dnf install -y nftables
+        systemctl enable nftables >/dev/null 2>&1
+    fi
+
+    # 确保 nat 表存在
+    nft list table nat >/dev/null 2>&1 || nft add table nat
+
+    while true; do
+        clear
+        echo -e "${BLUE}========= UDP 端口跳跃管理 (nftables) =========${PLAIN}"
+        echo -e "功能: 将大范围 UDP 流量转发至真实监听端口"
+        echo -e "----------------------------------------------------"
+        echo -e " ${GREEN}1.${PLAIN} 添加跳跃规则"
+        echo -e " ${RED}2.${PLAIN} 删除跳跃规则"
+        echo -e " ${SKYBLUE}3.${PLAIN} 查看当前规则"
+        echo -e " ${GRAY}0.${PLAIN} 返回上一级"
+        echo ""
+        read -p "请选择: " choice
+
+        case "$choice" in
+            1)
+                read -p "请输入真实监听端口 (Target Port, 例 443): " target_port
+                read -p "请输入跳跃起始端口 (Start Port, 例 20000): " start_port
+                read -p "请输入跳跃结束端口 (End Port, 例 30000): " end_port
+                if [[ -z "$target_port" || -z "$start_port" || -z "$end_port" ]]; then
+                    echo -e "${RED}错误: 参数不能为空${PLAIN}"; sleep 2; continue
+                fi
+                if [[ $start_port -gt $end_port ]]; then
+                    echo -e "${RED}错误: 起始端口不能大于结束端口${PLAIN}"; sleep 2; continue
+                fi
+
+                echo -e "${YELLOW}正在添加规则: UDP $start_port-$end_port -> $target_port${PLAIN}"
+                nft add rule nat prerouting udp dport "$start_port"-"$end_port" redirect to :"$target_port"
+                nft list ruleset > /etc/nftables.conf 2>/dev/null
+                echo -e "${GREEN}✅ 规则添加成功并已持久化${PLAIN}"
+                ;;
+            2)
+                echo -e "${YELLOW}当前 NAT 转发规则:${PLAIN}"
+                nft -a list table nat
+                read -p "请输入要删除的规则 handle 编号: " handle
+                if [[ -n "$handle" ]]; then
+                    nft delete rule nat prerouting handle "$handle"
+                    nft list ruleset > /etc/nftables.conf 2>/dev/null
+                    echo -e "${GREEN}✅ 规则已删除${PLAIN}"
+                else
+                    echo -e "${RED}未输入 handle，取消删除${PLAIN}"
+                fi
+                ;;
+            3)
+                echo -e "${YELLOW}当前所有 NAT 规则:${PLAIN}"
+                nft list table nat
+                ;;
+            0) return ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+        read -p "按回车继续..."
+    done
+}
 
 # --- 8. SSH 安全加固（恢复便利功能 + Fail2Ban 询问）---
 configure_ssh_security() {
