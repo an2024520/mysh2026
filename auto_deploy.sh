@@ -3,6 +3,7 @@
 #  Commander Auto-Deploy (v7.3 Hy2 Smart Adapt)
 #  - 特性: 严格 IP 检测 | 纯净 URL (适配 Worker)
 #  - 升级: 适配 Sing-box Hysteria 2 智能部署 (自签/ACME)
+#  - 新增: 适配 Xray ML-KEM 抗量子加密模块
 # ============================================================
 
 # --- 基础定义 ---
@@ -277,6 +278,16 @@ deploy_logic() {
             unset XRAY_XHTTP_PORT
             XRAY_TAGS_ACC+="Xray-XHTTP-${VAR_XRAY_XHTTP_PORT},"
         fi
+
+        # [新增] E. ML-KEM ENC (抗量子)
+        if [[ "$DEPLOY_XRAY_MLKEM" == "true" ]]; then
+            echo -e "${GREEN}>>> [Xray] ML-KEM-768 节点 (: ${VAR_XRAY_MLKEM_PORT})...${PLAIN}"
+            export PORT="$VAR_XRAY_MLKEM_PORT"
+            run "xray_vless_xhttp_reality_mlkem.sh"
+            unset PORT
+            # Tag 必须与脚本内部定义的 NODE_TAG 一致
+            XRAY_TAGS_ACC+="Xray-MLKEM-${VAR_XRAY_MLKEM_PORT},"
+        fi
     fi
 
     # === 3. WARP 模块 (分发与隔离) ===
@@ -350,7 +361,9 @@ show_dashboard() {
         [[ "$DEPLOY_XRAY_VISION" == "true" ]]    && echo -e "  ├─ Vision Reality  [Port: ${GREEN}$VAR_XRAY_VISION_PORT${PLAIN}]"
         [[ "$DEPLOY_XRAY_WS" == "true" ]]        && echo -e "  ├─ WS+TLS (CDN)    [Port: ${GREEN}$VAR_XRAY_WS_PORT${PLAIN}]"
         [[ "$DEPLOY_XRAY_WS_TUNNEL" == "true" ]] && echo -e "  ├─ WS Tunnel       [Port: ${GREEN}$VAR_XRAY_WS_TUNNEL_PORT${PLAIN}]"
-        [[ "$DEPLOY_XRAY_XHTTP" == "true" ]]     && echo -e "  └─ XHTTP Reality   [Port: ${GREEN}$VAR_XRAY_XHTTP_PORT${PLAIN}]"
+        [[ "$DEPLOY_XRAY_XHTTP" == "true" ]]     && echo -e "  ├─ XHTTP Reality   [Port: ${GREEN}$VAR_XRAY_XHTTP_PORT${PLAIN}]"
+        # [新增] ML-KEM 显示
+        [[ "$DEPLOY_XRAY_MLKEM" == "true" ]]     && echo -e "  └─ ML-KEM (ENC)    [Port: ${GREEN}$VAR_XRAY_MLKEM_PORT${PLAIN}]"
         has_item=true
     fi
 
@@ -401,6 +414,8 @@ menu_protocols() {
         echo -e " 7. [$(get_status $DEPLOY_XRAY_WS)] Vless_WS_TLS (CDN_回源)"
         echo -e " 8. [$(get_status $DEPLOY_XRAY_WS_TUNNEL)] Vless_WS_Tunnel"
         echo -e " 9. [$(get_status $DEPLOY_XRAY_XHTTP)] Vless_XHTTP_Reality"
+        # [新增] 选项 10
+        echo -e "10. [$(get_status $DEPLOY_XRAY_MLKEM)] Vless_ENC_MLKEM (抗量子)"
         echo ""
         echo -e " 0. 返回"
         read -p "选择: " c
@@ -448,6 +463,17 @@ menu_protocols() {
             9) 
                 if [[ "$DEPLOY_XRAY_XHTTP" == "true" ]]; then DEPLOY_XRAY_XHTTP=false; else 
                     DEPLOY_XRAY_XHTTP=true; INSTALL_XRAY=true; read -p "端口(2053): " p; VAR_XRAY_XHTTP_PORT=${p:-2053}; fi ;;
+            # [新增] 选项 10 逻辑
+            10)
+                if [[ "$DEPLOY_XRAY_MLKEM" == "true" ]]; then 
+                    DEPLOY_XRAY_MLKEM=false
+                else 
+                    DEPLOY_XRAY_MLKEM=true
+                    INSTALL_XRAY=true
+                    read -p "端口(2088): " p
+                    VAR_XRAY_MLKEM_PORT=${p:-2088}
+                fi 
+                ;;
             0) break ;;
         esac
     done
