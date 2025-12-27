@@ -5,6 +5,7 @@
 #  - 传输: XHTTP (HTTP/3)
 #  - 伪装: Reality
 #  - 核心要求: Xray-core v25.12.8+
+#  - 特性: 移植 Vision 脚本的"强制覆盖"逻辑
 # ============================================================
 
 # 颜色定义
@@ -71,14 +72,18 @@ if [[ "$AUTO_SETUP" == "true" ]]; then
     # 自动模式默认使用微软
     SNI="www.microsoft.com"
 else
-    # === 手动模式 ===
+    # === 手动模式 (移植 Vision 覆盖逻辑) ===
     echo -e "${YELLOW}--- 配置 VLESS-ENC 参数 ---${PLAIN}"
     while true; do
         read -p "请输入监听端口 (默认 2088): " CUSTOM_PORT
         [[ -z "$CUSTOM_PORT" ]] && PORT=2088 && break
         if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
+            # 检查端口占用，但允许覆盖
             if grep -q "\"port\": $CUSTOM_PORT" "$CONFIG_FILE"; then
-                 echo -e "${RED}警告: 端口 $CUSTOM_PORT 似乎已被占用，请更换。${PLAIN}"
+                 echo -e "${RED}警告: 端口 $CUSTOM_PORT 似乎已被旧配置占用。${PLAIN}"
+                 echo -e "${GREEN}>>> 将执行覆盖安装模式 (Overwrite Mode)。${PLAIN}"
+                 PORT="$CUSTOM_PORT"
+                 break
             else
                  PORT="$CUSTOM_PORT"
                  break
@@ -107,15 +112,15 @@ UUID=$($XRAY_BIN uuid)
 SHORT_ID=$(openssl rand -hex 4)
 XHTTP_PATH="/$(openssl rand -hex 6)"
 
-# [Reality] 标准 X25519 (采用 Vision 脚本的验证逻辑)
+# [Reality] 标准 X25519
 RAW_REALITY=$($XRAY_BIN x25519)
-# 使用 tr -d ' \r\n' 强制清洗换行和空格，防止空变量
+# 修正: 使用 tr -d ' \r\n' 强制清洗换行和空格，防止空变量
 PRIVATE_KEY=$(echo "$RAW_REALITY" | grep "Private" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 PUBLIC_KEY=$(echo "$RAW_REALITY" | grep -E "Password|Public" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 
 # [VLESS ENC] ML-KEM-768 提取逻辑
 RAW_ENC=$($XRAY_BIN vlessenc)
-# 使用 awk -F '"' 提取 JSON 字段值，更精准
+# 修正: 使用 awk -F '"' 提取 JSON 字段值，更精准
 SERVER_DECRYPTION=$(echo "$RAW_ENC" | grep '"decryption":' | head -n1 | awk -F '"' '{print $4}')
 CLIENT_ENCRYPTION=$(echo "$RAW_ENC" | grep '"encryption":' | head -n1 | awk -F '"' '{print $4}')
 
@@ -138,7 +143,9 @@ echo -e "VLESS Enc Key : ${SKYBLUE}ML-KEM-768 (OK)${PLAIN}"
 # 5. 注入节点配置
 NODE_TAG="Xray-MLKEM-${PORT}"
 
-# 清理冲突配置
+# ==========================================================
+# [自动清洗] 无论端口是否冲突，先删除旧的同 Tag 或同端口配置
+# ==========================================================
 tmp_clean=$(mktemp)
 jq --argjson p "$PORT" --arg tag "$NODE_TAG" \
    'del(.inbounds[]? | select(.port == $p or .tag == $tag))' \
