@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
-#  Sing-box WARP IPv6 优先分流补丁 (v3.1 Auto-Strategy)
-#  - 核心功能: 实现 "IPv6优先直连，IPv4兜底WARP"
+#  Sing-box WARP IPv6 优先分流补丁 (v3.2 Auto-Strategy)
+#  - 核心功能: 实现 "IPv6优先直连，IPv4兜底WARP" 或 "双栈WARP接管"
 #  - 适用版本: Sing-box v1.12+
 #  - 自动化: 自动将选中节点的 domain_strategy 修改为 prefer_ipv6
 # ============================================================
@@ -76,6 +76,24 @@ patch_config() {
     if [[ -z "$target_tag" ]]; then echo -e "${RED}选择无效。${PLAIN}"; exit 1; fi
     
     echo -e "${GREEN}选中节点: ${target_tag}${PLAIN}"
+
+    # ====================================================
+    # 新增: 策略选择菜单
+    # ====================================================
+    echo -e "------------------------------------------------"
+    echo -e "${SKYBLUE}请选择流量转发策略:${PLAIN}"
+    echo -e " 1. IPv6走直连 + IPv4走WARP (默认 - 保留原生IPv6性能)"
+    echo -e " 2. 双栈全部走WARP (IPv6优先 - 隐藏真实IP/WARP接管双栈)"
+    read -p "输入选项 (默认为1): " strategy_select
+    
+    local v6_outbound_target="$direct_tag"
+    if [[ "$strategy_select" == "2" ]]; then
+        v6_outbound_target="WARP"
+        echo -e "${GREEN}已选择: 双栈 WARP 接管模式${PLAIN}"
+    else
+        echo -e "${GREEN}已选择: IPv6 直连模式${PLAIN}"
+    fi
+
     echo -e "${YELLOW}正在备份并注入规则...${PLAIN}"
     
     cp "$CONFIG_FILE" "$BACKUP_FILE"
@@ -97,12 +115,12 @@ patch_config() {
 
     # ====================================================
     # 步骤 B: 注入路由规则 (置顶)
-    # 1. 目标是 IPv6 (::/0) -> 走 Direct
+    # 1. 目标是 IPv6 (::/0) -> 走 Direct 或 WARP (取决于选择)
     # 2. 目标是 IPv4 (0.0.0.0/0) -> 走 WARP
     # ====================================================
     
-    # 规则1: IPv6 -> Direct
-    local rule_v6=$(jq -n --arg t "$target_tag" --arg dt "$direct_tag" '{ 
+    # 规则1: IPv6 -> Target (Direct or WARP)
+    local rule_v6=$(jq -n --arg t "$target_tag" --arg dt "$v6_outbound_target" '{ 
         "inbound": [$t], "ip_cidr": ["::/0"], "outbound": $dt 
     }')
     
@@ -119,13 +137,18 @@ patch_config() {
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}配置成功！${PLAIN}"
         echo -e "1. 节点 [${target_tag}] DNS 策略已设为: prefer_ipv6"
-        echo -e "2. 路由规则已置顶: [IPv6->Direct] -> [IPv4->WARP]"
+        echo -e "2. 路由规则已置顶: [IPv6->${v6_outbound_target}] -> [IPv4->WARP]"
         
         # 重启服务
         if systemctl list-unit-files | grep -q sing-box; then
             systemctl restart sing-box
             echo -e "${GREEN}Sing-box 服务已重启。${PLAIN}"
-            echo -e "验证方法: 连接该节点，访问 ip.sb (应显示 IPv4 WARP IP) 和 test-ipv6.com (应显示 VPS 原生 IPv6)"
+            echo -e "验证方法: 连接该节点，访问 ip.sb (应显示 IPv4 WARP IP)"
+            if [[ "$v6_outbound_target" == "WARP" ]]; then
+                echo -e "test-ipv6.com (应显示 WARP IPv6 IP)"
+            else
+                echo -e "test-ipv6.com (应显示 VPS 原生 IPv6)"
+            fi
         else
             echo -e "${YELLOW}未检测到 systemd 服务，请手动重启 Sing-box。${PLAIN}"
         fi
