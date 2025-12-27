@@ -14,6 +14,10 @@ PLAIN='\033[0m'
 BLUE='\033[0;34m'
 GRAY='\033[0;90m'
 
+if ! command -v bc >/dev/null; then
+    apt update && apt install -y bc || yum install -y bc
+fi
+
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
