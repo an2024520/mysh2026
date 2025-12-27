@@ -1,14 +1,12 @@
 #!/bin/bash
-echo "v5.0"
-sleep 5
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
-# Version: v5.0 (Strict v1.12+ Compliance)
+# Version: v5.3 (Funnel Strategy Edition)
 # 
-# Update Log:
-#   v5.0: [CRITICAL FIX] Removed "detour" field from DNS servers. 
-#         Fixes "detour to an empty direct outbound makes no sense" crash in v1.12+.
-#   v4.9: Auto-Direct Inject (Deprecated, logic updated to v5.0 standard).
+# Fixes:
+#   1. Logic: Changed from "Match IPv4" to "Catch All Non-IPv6".
+#      (Guarantees IPv4 traffic goes to WARP even if DNS resolving lags).
+#   2. Parsing: Fixed bug where tags with spaces (e.g. "My Node") were broken.
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -16,10 +14,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
-
-# ==========================================
-# 1. 环境初始化
-# ==========================================
 
 CONFIG_FILE=""
 CRED_FILE="/etc/sing-box/warp_credentials.conf"
@@ -55,26 +49,21 @@ ensure_python() {
     fi
 }
 
-# --- 环境检测与 Endpoint 适配 ---
 check_env() {
     echo -e "${YELLOW}正在执行网络环境检测...${PLAIN}"
     FINAL_EP_ADDR="engage.cloudflareclient.com"
     FINAL_EP_PORT=2408
-
     local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
-    
     if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo -e "${GREEN}>>> 检测到有效 IPv4 环境。${PLAIN}"
     else
         FINAL_EP_ADDR="2606:4700:d0::a29f:c001"
         echo -e "${SKYBLUE}>>> 检测到纯 IPv6 环境，切换为专用 Endpoint: ${FINAL_EP_ADDR}${PLAIN}"
     fi
-    
     export FINAL_EP_ADDR
     export FINAL_EP_PORT
 }
 
-# --- [v5.0] 移除多余的 Tag 获取逻辑，DNS不再需要 detour ---
 get_direct_tag() {
     local tag=$(jq -r '.outbounds[] | select(.type=="direct" or .tag=="direct" or .tag=="freedom") | .tag' "$CONFIG_FILE" | head -n1)
     echo "${tag:-direct}"
@@ -84,7 +73,6 @@ restart_sb() {
     mkdir -p /var/log/sing-box/
     chown -R root:root /var/log/sing-box/ >/dev/null 2>&1
     echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
-    
     if command -v sing-box &> /dev/null; then
         local check_out=$(sing-box check -c "$CONFIG_FILE" 2>&1)
         if [[ $? -ne 0 ]]; then
@@ -95,7 +83,6 @@ restart_sb() {
              return 1
         fi
     fi
-
     if systemctl list-unit-files | grep -q sing-box; then
         systemctl restart sing-box
     else
@@ -109,10 +96,6 @@ restart_sb() {
         echo -e "${RED}服务重启失败！请检查日志 (journalctl -u sing-box -n 20)。${PLAIN}"
     fi
 }
-
-# ==========================================
-# 2. 核心功能函数
-# ==========================================
 
 clean_reserved() {
     local input="$1"
@@ -144,16 +127,13 @@ write_warp_config() {
         mkdir -p "$(dirname "$CONFIG_FILE")"
         echo "{}" > "$CONFIG_FILE"
     fi
-
     [[ ! "$v4" =~ "/" && -n "$v4" && "$v4" != "null" ]] && v4="${v4}/32"
     [[ ! "$v6" =~ "/" && -n "$v6" && "$v6" != "null" ]] && v6="${v6}/128"
-    
     local addr_json="[]"
     [[ -n "$v4" && "$v4" != "null" ]] && addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]')
     [[ -n "$v6" && "$v6" != "null" ]] && addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]')
-    
     check_env
-
+    # 使用 endpoints 架构 (Sing-box v1.12+ Standard)
     local endpoint_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -177,19 +157,16 @@ write_warp_config() {
                 }
             ] 
         }')
-
-    echo -e "${YELLOW}正在应用 v3.9 Final 架构配置...${PLAIN}"
+    echo -e "${YELLOW}正在应用 Endpoint 架构配置...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
-    
     jq '.endpoints = (.endpoints // []) | .outbounds = (.outbounds // [])' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .type == "wireguard"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq --argjson ep "$endpoint_json" '.endpoints += [$ep]' "$CONFIG_FILE" > "$TMP_CONF"
-    
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
-        echo -e "${GREEN}WARP 架构迁移与配置写入成功。${PLAIN}"
+        echo -e "${GREEN}WARP Endpoint 已写入。${PLAIN}"
         restart_sb
     else
         echo -e "${RED}写入失败，恢复备份...${PLAIN}"
@@ -208,12 +185,10 @@ register_warp() {
     local result=$(curl -sX POST "https://api.cloudflareclient.com/v0a2158/reg" \
         -H "User-Agent: okhttp/3.12.1" -H "Content-Type: application/json; charset=UTF-8" \
         -d "{\"key\":\"${pub_key}\",\"install_id\":\"${install_id}\",\"fcm_token\":\"${install_id}:APA91bHuwEuLNj_${install_id}\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"model\":\"Android\",\"serial_number\":\"${install_id}\",\"locale\":\"zh_CN\"}")
-    
     local v4=$(echo "$result" | jq -r '.config.interface.addresses.v4')
     local v6=$(echo "$result" | jq -r '.config.interface.addresses.v6')
     local client_id=$(echo "$result" | jq -r '.config.client_id')
     [[ "$v4" == "null" || -z "$v4" ]] && { echo -e "${RED}注册失败${PLAIN}"; return 1; }
-    
     local res_json=$(python3 -c "import base64, json; d=base64.b64decode('$client_id'); print(json.dumps([x for x in d[0:3]]))" 2>/dev/null)
     save_credentials "$priv_key" "$pub_key" "$v4" "$v6" "$res_json"
     write_warp_config "$priv_key" "$pub_key" "$v4" "$v6" "$res_json"
@@ -233,7 +208,6 @@ manual_warp() {
     v6=${v6:-$def_v6}
     read -p "Reserved [默认: $def_res]: " res_input
     res_input=${res_input:-$def_res}
-    
     local res_json="[0,0,0]"
     if [[ "$res_input" =~ [0-9] ]]; then
         res_json=$(clean_reserved "$res_input")
@@ -276,24 +250,6 @@ get_anti_loop_rule() {
     jq -n --argjson ip "$ip_cidr" --arg dt "$direct_tag" '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "ip_cidr": $ip, "outbound": $dt }'
 }
 
-fix_dns_strict_v6() {
-    local TMP_CONF=$(mktemp)
-    # [v5.0 修正] 彻底移除 "detour": $dt 字段
-    # v1.12+ 严禁将 DNS detour 到一个空的 direct outbound
-    local clean_dns='{
-        "servers": [
-            {"tag": "google", "type": "udp", "server": "2001:4860:4860::8888"},
-            {"tag": "local", "type": "local"}
-        ],
-        "rules": [],
-        "final": "google",
-        "strategy": "prefer_ipv6"
-    }'
-    
-    jq --argjson dns "$clean_dns" '.dns = $dns' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    jq '.route.default_domain_resolver = "google"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-}
-
 mode_stream() {
     ensure_warp_exists || return
     apply_routing_rule "$(jq -n '{ "domain_suffix": ["netflix.com","nflxvideo.net","openai.com","ai.com","google.com","youtube.com"], "outbound": "WARP" }')"
@@ -314,28 +270,41 @@ mode_global() {
     echo -e "${GREEN}全局接管策略已应用。${PLAIN}"
 }
 
-# [v5.0 Fixed] 彻底修复 DNS detour 崩溃
+# [v5.3] 漏斗式分流逻辑 (Funnel Strategy)
 mode_flexible_node() {
     ensure_warp_exists || return
     
     echo -e "${YELLOW}正在读取节点列表...${PLAIN}"
-    local node_list=$(jq -r '.inbounds[] | "\(.tag) | \(.type)"' "$CONFIG_FILE" | nl)
-    if [[ -z "$node_list" ]]; then echo -e "${RED}无有效入站节点。${PLAIN}"; return; fi
+    # [Fix] 使用 mapfile + jq 数组 安全读取含空格的 Tag
+    local tags_raw
+    mapfile -t tags_raw < <(jq -r '.inbounds[] | "\(.tag) | \(.type)"' "$CONFIG_FILE")
+    
+    if [[ ${#tags_raw[@]} -eq 0 ]]; then echo -e "${RED}无有效入站节点。${PLAIN}"; return; fi
     
     echo -e "------------------------------------------------"
-    echo "$node_list"
+    local i=1
+    for t in "${tags_raw[@]}"; do
+        echo "     $i  $t"
+        ((i++))
+    done
     echo -e "------------------------------------------------"
     echo -e "${SKYBLUE}步骤 1/2: 选择节点序号 (空格分隔，如: 1 3)${PLAIN}"
     read -p "输入序号: " selection
     
     local tags_list=()
     for num in $selection; do
-        local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
-        if [[ -n "$tag" ]]; then
+        # 数组索引从0开始，用户输入从1开始，需-1
+        local idx=$((num-1))
+        # 提取 Tag (去除 " | type" 后缀)
+        local raw_entry="${tags_raw[$idx]}"
+        if [[ -n "$raw_entry" ]]; then
+            # 使用 sed 提取 | 前面的部分并去除尾部空格
+            local tag=$(echo "$raw_entry" | sed 's/ | .*//')
             tags_list+=("$tag")
             echo -e "已选中: ${GREEN}${tag}${PLAIN}"
         fi
     done
+    
     if [[ ${#tags_list[@]} -eq 0 ]]; then echo -e "${RED}无效选择。${PLAIN}"; return; fi
     local tags_json=$(printf '%s\n' "${tags_list[@]}" | jq -R . | jq -s .)
 
@@ -345,26 +314,27 @@ mode_flexible_node() {
     echo -e " c. 双栈全部走 WARP (完全隐身)"
     read -p "请选择: " sub
     
-    # 强制优化 DNS (不带 detour)
-    fix_dns_strict_v6
-    
     local direct_tag=$(get_direct_tag)
     local anti_loop=$(get_anti_loop_rule)
-    
     local rules="[]"
+    
     case "$sub" in
         a)
-            # 选中节点: OpenAI->Warp, v4->Warp, v6->Direct
+            # [策略核心 - 漏斗模式]
+            # 1. 选中节点 -> IPv6 -> Direct
+            # 2. 选中节点 -> All (剩余流量) -> WARP
+            # 这样写比 {ip_version:4} 更稳，因为能兜底所有 DNS 解析失败或未识别的情况
             rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
                 { "inbound": $tags, "domain_suffix": ["openai.com","ai.com","chatgpt.com"], "outbound": "WARP" },
-                { "inbound": $tags, "ip_version": 4, "outbound": "WARP" },
-                { "inbound": $tags, "ip_version": 6, "outbound": $dt }
+                { "inbound": $tags, "ip_version": 6, "outbound": $dt },
+                { "inbound": $tags, "outbound": "WARP", "comment": "Catch-All IPv4 Fallback" },
+                { "ip_version": 4, "outbound": "WARP", "comment": "Local Test Support" }
             ]')
             ;;
         b)
             rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
                 { "inbound": $tags, "ip_version": 6, "outbound": "WARP" },
-                { "inbound": $tags, "ip_version": 4, "outbound": $dt }
+                { "inbound": $tags, "outbound": $dt }
             ]')
             ;;
         *)
@@ -377,10 +347,7 @@ mode_flexible_node() {
     echo -e "${YELLOW}正在应用策略...${PLAIN}"
     local TMP_CONF=$(mktemp)
     
-    # 清理旧规则
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    
-    # 注入 (Anti-Loop + Rules)
     jq --argjson r "$rules" --argjson al "$anti_loop" '.route.rules = [$al] + $r + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
@@ -395,7 +362,6 @@ mode_flexible_node() {
 mode_ipv6_priority_global() {
     ensure_warp_exists || return
     echo -e "${YELLOW}正在应用 IPv6 优先策略 (全局生效)...${PLAIN}"
-    fix_dns_strict_v6
     local rules='[
         { "domain_suffix": ["openai.com", "ai.com", "chatgpt.com"], "outbound": "WARP" },
         { "ip_version": 4, "outbound": "WARP" }
@@ -424,7 +390,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v5.0 Strict)${PLAIN}"
+                st="${GREEN}已配置 (v5.3 Funnel)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -454,7 +420,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v5.0)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v5.3)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
@@ -464,14 +430,13 @@ auto_main() {
     fi
 
     if [[ -n "$WARP_INBOUND_TAGS" ]]; then
-        fix_dns_strict_v6
         local tags_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
         local direct_tag=$(get_direct_tag)
         local anti_loop=$(get_anti_loop_rule)
         local rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
             { "inbound": $tags, "domain_suffix": ["openai.com"], "outbound": "WARP" },
-            { "inbound": $tags, "ip_version": 4, "outbound": "WARP" },
-            { "inbound": $tags, "ip_version": 6, "outbound": $dt }
+            { "inbound": $tags, "ip_version": 6, "outbound": $dt },
+            { "inbound": $tags, "outbound": "WARP" }
         ]')
         local TMP_CONF=$(mktemp)
         jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
