@@ -175,9 +175,9 @@ configure_ssh_security() {
     fi
 
     if [[ -n "$pub_key" ]]; then
-        echo "$pub_key" >> ~/.ssh/authorized_keys
+        echo "$pub_key" > ~/.ssh/authorized_keys
         chmod 600 ~/.ssh/authorized_keys
-        echo -e "${GREEN}✅ 公钥已写入${PLAIN}"
+        echo -e "${GREEN}✅ 公钥已覆写（旧密钥已清除）${PLAIN}"
     fi
 
     read -p "是否禁用密码登录？(y/n): " disable_pass
