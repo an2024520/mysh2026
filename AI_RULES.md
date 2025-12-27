@@ -1,6 +1,7 @@
 # AI Developer Rules & Knowledge Base (Updated: 2025)
 
 ## 1. Sing-box Version Compliance (Target: v1.12+)
+* Migration guide file: singbox/docs/migration.md
 * **No Bridge Outbounds**: strictly FORBIDDEN to use `type: direct` with `detour`.
 * **Endpoint Routing**: Endpoints MUST have a `tag` (e.g., "WARP") and strictly act as routing targets directly.
 * **Structure**: Use `endpoints` array for WireGuard/WARP, not `outbounds`.
