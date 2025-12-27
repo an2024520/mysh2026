@@ -69,12 +69,12 @@
             {
            	"settings": {
             	   "decryption": "YOUR_PRIVATE_KEY_HERE"
-             	   // 注意: 使用 XHTTP 时，'flow' 字段必须为空或直接省略
+             	   # 注意: 使用 XHTTP 时，'flow' 字段必须为空或直接省略
             	}
             }
 	```
 
-    * 1.  **具体参考示例**:（VLESS + vlessEncryption+XHTTP + REALITY）：
+    * 2.  **具体参考示例**:（VLESS + vlessEncryption+XHTTP + REALITY）：
 	```json
            {
              "inbounds": [
@@ -86,22 +86,22 @@
                      {
                        "id": "你的UUID",
                        "flow": "" 
-                       // 注意：argosbx.sh 在 XHTTP 模式下也保留了 flow，但Gemini认为XHTTP下xtls-rprx-vision是无效的。
+                      # 注意：argosbx.sh 在 XHTTP 模式下也保留了 flow，但Gemini认为XHTTP下xtls-rprx-vision是无效的。
                      }
                    ],
-                   // 关键点：注入抗量子解密私钥
-                   "decryption": "这里填入上面提取的 mlkem_decryption"
+                   # 关键点：注入抗量子解密私钥
+                   "decryption": "	#这里填入上面提取的 mlkem_decryption"
                  },
                  "streamSettings": {
                    "network": "xhttp",
                    "security": "reality",
                    "xhttpSettings": {
                      "mode": "auto",
-                     "path": "/你的路径" // 参考 argosbx.sh 的 path 设置
+                     "path": "/你的路径" # 参考 argosbx.sh 的 path 设置
                    },
                    "realitySettings": {
                      "show": false,
-                     "dest": "www.apple.com:443", // 示例回落域名
+                     "dest": "www.apple.com:443", # 示例回落域名
                      "serverNames": ["www.apple.com"],
                      "privateKey": "这里填入 reality_private",
                      "shortIds": ["这里填入 reality_shortid"]
