@@ -1,15 +1,12 @@
 #!/bin/bash
-echo "3.0"
-sleep 5
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
-# Version: v4.8 (Bug Fix & Stability)
+# Version: v4.9 (Crash Fix / Auto-Direct Inject)
 # 
 # Update Log:
-#   v4.8: [Critical] Fixed logic conflict where apply_routing_rule deleted custom strategies.
-#   v4.8: [Fix] Fixed "No such file" error caused by mv + rm sequence.
-#   v4.8: [Feat] Auto-detect "direct" vs "freedom" outbound tags to prevent startup crash.
-#   v4.7: Clarified menu descriptions.
+#   v4.9: [FATAL Fix] Fixed "detour to an empty direct outbound" error.
+#         Logic: Automatically injects a fallback "DIRECT-FIX" outbound if no valid direct tag is found.
+#   v4.8: Stability fixes.
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -62,7 +59,6 @@ check_env() {
     FINAL_EP_ADDR="engage.cloudflareclient.com"
     FINAL_EP_PORT=2408
 
-    # 简单的 IPv4 连通性测试
     local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
     
     if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -76,16 +72,29 @@ check_env() {
     export FINAL_EP_PORT
 }
 
-# --- 智能获取直连 Tag ---
-get_direct_tag() {
-    # 尝试查找常见的直连出站标签
-    local tag=$(jq -r '.outbounds[] | select(.type=="direct" or .tag=="direct" or .tag=="freedom") | .tag' "$CONFIG_FILE" | head -n1)
-    if [[ -z "$tag" ]]; then
-        # 如果没找到，默认回退到 direct，但警告
-        echo "direct"
-    else
+# --- [v4.9 新增] 强制获取有效的直连 Tag ---
+ensure_valid_direct_tag() {
+    # 1. 尝试寻找现有的 type=direct 出口
+    local tag=$(jq -r '.outbounds[] | select(.type=="direct") | .tag' "$CONFIG_FILE" | head -n1)
+    
+    # 2. 如果找到了，直接返回
+    if [[ -n "$tag" && "$tag" != "null" ]]; then
         echo "$tag"
+        return
     fi
+    
+    # 3. 如果没找到，说明配置文件可能很怪，或者没有直连出口。
+    # 必须注入一个专用直连出口，否则 DNS 会报错崩溃。
+    local fix_tag="DIRECT-FIX"
+    
+    # 检查是否已经注入过
+    if ! jq -e --arg t "$fix_tag" '.outbounds[] | select(.tag == $t)' "$CONFIG_FILE" >/dev/null 2>&1; then
+        # 注入逻辑
+        local TMP_CONF=$(mktemp)
+        jq --arg t "$fix_tag" '.outbounds += [{"type": "direct", "tag": $t}]' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    fi
+    
+    echo "$fix_tag"
 }
 
 restart_sb() {
@@ -94,7 +103,6 @@ restart_sb() {
     echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
     
     if command -v sing-box &> /dev/null; then
-        # 捕获 check 输出以便调试
         local check_out=$(sing-box check -c "$CONFIG_FILE" 2>&1)
         if [[ $? -ne 0 ]]; then
              echo -e "${RED}配置语法校验失败！${PLAIN}"
@@ -280,18 +288,15 @@ apply_routing_rule() {
 get_anti_loop_rule() {
     if [[ -z "$FINAL_EP_ADDR" ]]; then check_env >/dev/null; fi
     local ip_cidr="[]"
-    local direct_tag=$(get_direct_tag) # 动态获取 direct 标签
+    local direct_tag=$(ensure_valid_direct_tag) # 使用新函数确保 Tag 存在
     if [[ "$FINAL_EP_ADDR" == *":"* ]]; then ip_cidr="[\"${FINAL_EP_ADDR}/128\"]"; fi
     jq -n --argjson ip "$ip_cidr" --arg dt "$direct_tag" '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "ip_cidr": $ip, "outbound": $dt }'
 }
 
 fix_dns_strict_v6() {
     local TMP_CONF=$(mktemp)
-    # 纯净 IPv6 DNS 配置: Google v6
-    # 自动识别 default_domain_resolver 的直连出站 tag 比较复杂，通常 DNS 查询走默认路由即可
-    # 这里的 detour: direct 需要确保 config 里有 direct。如果没有，会导致警告。
-    # 既然我们要修复，顺便获取一下 direct tag
-    local direct_tag=$(get_direct_tag)
+    # 获取或创建直连 Tag
+    local direct_tag=$(ensure_valid_direct_tag)
     
     local clean_dns=$(jq -n --arg dt "$direct_tag" '{
         "servers": [
@@ -305,9 +310,6 @@ fix_dns_strict_v6() {
     
     jq --argjson dns "$clean_dns" '.dns = $dns' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq '.route.default_domain_resolver = "google"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    
-    # 修复：mv 后文件已移走，不需要 rm，或者 mktemp 生成的文件如果不 mv 就要 rm
-    # 这里 TMP_CONF 已经 mv 覆盖了 CONFIG_FILE，所以原 TMP_CONF 路径已空，不需要 rm
 }
 
 mode_stream() {
@@ -330,7 +332,7 @@ mode_global() {
     echo -e "${GREEN}全局接管策略已应用。${PLAIN}"
 }
 
-# [v4.8 Fixed] 逻辑冲突修复版
+# [v4.9] 安全修复版
 mode_flexible_node() {
     ensure_warp_exists || return
     
@@ -361,20 +363,14 @@ mode_flexible_node() {
     echo -e " c. 双栈全部走 WARP (完全隐身)"
     read -p "请选择: " sub
     
-    # 强制优化 DNS
+    # [关键] 修复 DNS 并获取有效的 Direct Tag
     fix_dns_strict_v6
-    
-    # 获取直连 Tag
-    local direct_tag=$(get_direct_tag)
-    
-    # 构造防环路规则
+    local direct_tag=$(ensure_valid_direct_tag)
     local anti_loop=$(get_anti_loop_rule)
     
     local rules="[]"
     case "$sub" in
         a)
-            # IPv6 优先模式: OpenAI->Warp, v4->Warp, v6->Direct
-            # 注意：最后合并时，Anti-Loop 会在最前，然后是这些规则
             rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
                 { "inbound": $tags, "domain_suffix": ["openai.com","ai.com","chatgpt.com"], "outbound": "WARP" },
                 { "inbound": $tags, "ip_version": 4, "outbound": "WARP" },
@@ -397,11 +393,9 @@ mode_flexible_node() {
     echo -e "${YELLOW}正在应用策略...${PLAIN}"
     local TMP_CONF=$(mktemp)
     
-    # 1. 清理旧 WARP 规则
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     
-    # 2. 合并 Anti-Loop + 策略规则 (Anti-Loop 必须在最前)
-    # 注意：jq 数组相加顺序， $anti_loop 是单个对象，需要转数组
+    # 注入规则 (Anti-Loop 最优先)
     jq --argjson r "$rules" --argjson al "$anti_loop" '.route.rules = [$al] + $r + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
@@ -421,15 +415,9 @@ mode_ipv6_priority_global() {
         { "domain_suffix": ["openai.com", "ai.com", "chatgpt.com"], "outbound": "WARP" },
         { "ip_version": 4, "outbound": "WARP" }
     ]'
-    apply_routing_rule "$rules"
-    # 这里 apply_routing_rule 会重启服务，所以下面再加 anti_loop 又会重启一次，
-    # 且 apply_routing_rule 逻辑是“先删后加”，会导致覆盖。
-    # 修正逻辑：手动合并
     local anti_loop=$(get_anti_loop_rule)
     local TMP_CONF=$(mktemp)
-    # 1. 清理
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    # 2. 注入 (Anti-loop first, then rules)
     jq --argjson r "$rules" --argjson al "$anti_loop" '.route.rules = [$al] + $r + .route.rules' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     restart_sb
     echo -e "${GREEN}全局策略已应用：IPv6直连 / IPv4 WARP。${PLAIN}"
@@ -451,7 +439,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v4.8 Stable)${PLAIN}"
+                st="${GREEN}已配置 (v4.9 Fix)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -481,7 +469,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.8)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.9)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
@@ -490,11 +478,10 @@ auto_main() {
         register_warp
     fi
 
-    # 自动化模式下如果指定了 inbound tags，自动应用 IPv6 优先策略
     if [[ -n "$WARP_INBOUND_TAGS" ]]; then
         fix_dns_strict_v6
         local tags_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
-        local direct_tag=$(get_direct_tag)
+        local direct_tag=$(ensure_valid_direct_tag)
         local anti_loop=$(get_anti_loop_rule)
         local rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
             { "inbound": $tags, "domain_suffix": ["openai.com"], "outbound": "WARP" },
