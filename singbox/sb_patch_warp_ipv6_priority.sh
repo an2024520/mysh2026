@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "v1.0"
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
 # Version: v4.0 (IPv6-Priority Patch)
