@@ -1,4 +1,6 @@
 #!/bin/bash
+echo "v3.2"
+sleep 5
 # ============================================================
 #  Sing-box WARP IPv6 优先分流补丁 (v3.2 Auto-Strategy)
 #  - 核心功能: 实现 "IPv6优先直连，IPv4兜底WARP" 或 "双栈WARP接管"
