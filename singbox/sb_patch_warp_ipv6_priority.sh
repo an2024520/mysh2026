@@ -340,24 +340,44 @@ mode_specific_node() {
 }
 
 # [NEW] 模式四：IPv6 优先 (IPv4 脏环境专用)
+# [Fixed] 模式四：IPv6 优先 (自动补全 DNS 版)
 mode_ipv6_priority() {
     ensure_warp_exists || return
     echo -e "${YELLOW}正在应用 IPv6 优先策略 (适用于 IPv4 脏 IP 环境)...${PLAIN}"
     
     local TMP_CONF=$(mktemp)
+    
+    # -----------------------------------------------------------
+    # 1. DNS 策略强制修正 (修复 "未检测到 DNS 模块" 问题)
+    # -----------------------------------------------------------
+    echo -e "${YELLOW}>>> 正在检查 DNS 配置...${PLAIN}"
+    
+    # 定义标准 DNS 模板 (Sing-box v1.12+ 格式)
+    # 如果用户完全没有 DNS，使用此模板初始化
+    local default_dns='{
+        "servers": [
+            {"tag": "google", "address": "8.8.8.8", "detour": "direct"},
+            {"tag": "local", "address": "local", "detour": "direct"}
+        ],
+        "rules": [
+            {"outbound": "any", "server": "local"}
+        ],
+        "strategy": "prefer_ipv6"
+    }'
 
-    # 1. 强制修改 DNS 策略为 prefer_ipv6
-    # 这一步至关重要，确保 Sing-box 尽可能解析出 AAAA 记录，从而走 Direct
-    if jq -e '.dns' "$CONFIG_FILE" >/dev/null 2>&1; then
-        jq '.dns.strategy = "prefer_ipv6"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-        echo -e "${GREEN}>>> DNS 策略已强制设为 prefer_ipv6${PLAIN}"
+    if ! jq -e '.dns' "$CONFIG_FILE" >/dev/null 2>&1; then
+        echo -e "${SKYBLUE}提示: 检测到 DNS 模块缺失，正在初始化标准 DNS...${PLAIN}"
+        # 注入完整的 DNS 模块
+        jq --argjson dns "$default_dns" '.dns = $dns' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     else
-        echo -e "${RED}警告: 未检测到 DNS 模块，IPv6 优先策略可能不生效！${PLAIN}"
+        echo -e "${GREEN}提示: 检测到现有 DNS，正在强制修改策略...${PLAIN}"
+        # 仅修改策略，保留用户原有的 Server 配置
+        jq '.dns.strategy = "prefer_ipv6"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     fi
 
-    # 2. 构造路由规则组
-    # Rule 1: OpenAI -> 强制 WARP
-    # Rule 2: IP=IPv4 -> 强制 WARP
+    # -----------------------------------------------------------
+    # 2. 路由规则注入 (同原逻辑)
+    # -----------------------------------------------------------
     local rules='[
         {
             "domain_suffix": ["openai.com", "ai.com", "chatgpt.com"],
@@ -369,17 +389,16 @@ mode_ipv6_priority() {
         }
     ]'
 
-    # 3. 清理旧 WARP 规则并注入新规则
+    # 清理旧 WARP 规则
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     
-    # 头部注入
+    # 头部注入新规则
     jq --argjson new_rules "$rules" '.route.rules = $new_rules + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
-        # 再次应用防环路规则
         apply_routing_rule "$(get_anti_loop_rule)"
-        echo -e "${GREEN}策略已应用：IPv6 直连 / IPv4 -> WARP。${PLAIN}"
+        echo -e "${GREEN}策略已应用：DNS(Prefer IPv6) + IPv6 直连 + IPv4/OpenAI 走 WARP。${PLAIN}"
     else
         echo -e "${RED}策略应用失败。${PLAIN}"; rm "$TMP_CONF"
     fi
