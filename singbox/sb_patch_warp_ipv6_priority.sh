@@ -1,4 +1,6 @@
 #!/bin/bash
+echo "gg"
+sleep 5
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
 # Version: v5.8 (Route Strategy Injection)
