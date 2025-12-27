@@ -69,7 +69,7 @@
             {
            	"settings": {
             	   "decryption": "YOUR_PRIVATE_KEY_HERE"
-             	   # 注意: 使用 XHTTP 时，'flow' 字段必须为空或直接省略
+             	   // 注意: 使用 XHTTP 时，'flow' 字段必须为空或直接省略
             	}
             }
 	```
@@ -86,18 +86,18 @@
                      {
                        "id": "你的UUID",
                        "flow": "" 
-                      # 注意：argosbx.sh 在 XHTTP 模式下也保留了 flow，但Gemini认为XHTTP下xtls-rprx-vision是无效的。
+                      // 注意：argosbx.sh 在 XHTTP 模式下也保留了 flow，但Gemini认为XHTTP下xtls-rprx-vision是无效的。
                      }
                    ],
                    # 关键点：注入抗量子解密私钥
-                   "decryption": "	#这里填入上面提取的 mlkem_decryption"
+                   "decryption": "	// 这里填入上面提取的 mlkem_decryption"
                  },
                  "streamSettings": {
                    "network": "xhttp",
                    "security": "reality",
                    "xhttpSettings": {
                      "mode": "auto",
-                     "path": "/你的路径" # 参考 argosbx.sh 的 path 设置
+                     "path": "/你的路径" // 参考 argosbx.sh 的 path 设置
                    },
                    "realitySettings": {
                      "show": false,
@@ -110,10 +110,10 @@
                }
              ]
            }
-	```json
+	```
 
 
-      4.  **客户端分享链接**:
+* **客户端分享链接**:
           将提取的 `encryption` 值作为参数追加到链接中：
           * **参数格式**: `encryption=MLKEM_ENCRYPTION_KEY`
           * **完整示例**: `vless://UUID@IP:PORT?encryption=MLKEM_ENCRYPTION_KEY&flow=xtls-rprx-vision&security=reality&sni=SNI_DOMAIN&fp=chrome&pbk=REALITY_PUBLIC_KEY&sid=SHORT_ID&type=xhttp&path=PATH_VALUE&mode=auto#NAME`
