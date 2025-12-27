@@ -33,6 +33,8 @@
 ## 2. Xray-core 合规规范 (v25.12.8+)
 
 ### 2.1 VLESS 抗量子加密 (ML-KEM-768)
+* **注意**：后量子加密技术在xray中目前只使用于加密vless。
+* **关键词**: ENC，VLESS ENC,ENC加密，ENC抗量子加密，mlkem,ML-KEM-768。
 * **主要适用场景**: `VLESS + vlessEncryption + XHTTP + REALITY`
 * **最低版本**: v25.8.31+
 * **核心功能**: 利用 ML-KEM-768 算法动态生成加密（Client）和解密（Server）所需的密钥对。
