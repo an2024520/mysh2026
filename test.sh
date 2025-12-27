@@ -49,27 +49,24 @@ enable_bbr() {
     sed -i '/net\.ipv4\.tcp_ecn/d' /etc/sysctl.conf
     sed -i '/net\.core\.somaxconn/d' /etc/sysctl.conf
 
-    # 检测内核版本并选择最佳 BBR
-    local kernel_version=$(uname -r | cut -d'.' -f1-2)
+    # 检测内核版本并选择最佳 BBR（注：BBRv3 目前仍需特定内核或模块，普通发行版多为 bbr）
+    local kernel_version=$(uname -r | cut -d. -f1-2)
     local bbr_version="bbr"
 
-    if [[ $(echo "$kernel_version >= 6.1" | bc -l 2>/dev/null || echo 0) -eq 1 ]]; then
-        if lsmod | grep -q tcp_bbr3; then
+    if command -v bc >/dev/null && [[ $(echo "$kernel_version >= 6.1" | bc) -eq 1 ]]; then
+        if lsmod | grep -q bbr3 || modprobe tcp_bbr3 2>/dev/null; then
             bbr_version="bbr3"
-            echo -e "${GREEN}检测到支持 BBRv3，已启用！${PLAIN}"
-        elif modprobe tcp_bbr3 2>/dev/null; then
-            bbr_version="bbr3"
-            echo -e "${GREEN}已加载 BBRv3 模块${PLAIN}"
+            echo -e "${GREEN}检测到 BBRv3 支持，已启用！${PLAIN}"
         fi
     fi
 
     cat <<EOF >> /etc/sysctl.conf
 
-# === Network Optimization (2025) ===
+# === Network Optimization (2025 Best Practice) ===
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = $bbr_version
 net.ipv4.tcp_window_scaling = 1
-net.ipv4.tcp_ecn = 1                  # 启用 ECN，提高兼容性
+net.ipv4.tcp_ecn = 1
 net.core.somaxconn = 4096
 net.ipv4.tcp_fastopen = 3
 vm.swappiness = 10
@@ -77,10 +74,11 @@ EOF
 
     sysctl -p >/dev/null
 
-    # 优化 Ulimit（动态）
+    # 优化 Ulimit（高并发推荐值）
     backup_file /etc/security/limits.conf
-    if ! grep -q "*.*nofile" /etc/security/limits.conf; then
+    if ! grep -q "nofile 1048576" /etc/security/limits.conf; then
         cat <<EOF >> /etc/security/limits.conf
+
 * soft nofile 1048576
 * hard nofile 1048576
 root soft nofile 1048576
@@ -124,16 +122,12 @@ EOF
 sync_time() {
     echo -e "${YELLOW}正在配置高精度时间同步（Chrony）...${PLAIN}"
 
-    if command -v chronyd >/dev/null 2>&1; then
-        echo -e "${GREEN}Chrony 已安装，正在优化配置...${PLAIN}"
-    else
+    if ! command -v chronyd >/dev/null 2>&1; then
         echo -e "${YELLOW}正在安装 Chrony...${PLAIN}"
         if command -v apt >/dev/null; then
             apt update && apt install -y chrony
-        elif command -v yum >/dev/null; then
-            yum install -y chrony
-        elif command -v dnf >/dev/null; then
-            dnf install -y chrony
+        elif command -v yum >/dev/null || command -v dnf >/dev/null; then
+            yum install -y chrony || dnf install -y chrony
         else
             echo -e "${RED}不支持的包管理器${PLAIN}"
             return 1
@@ -143,15 +137,11 @@ sync_time() {
     backup_file /etc/chrony/chrony.conf
 
     cat >/etc/chrony/chrony.conf <<EOF
-# 高精度 NTP 池
+# 高精度 NTP 池 (2025 推荐)
 pool pool.ntp.org iburst
 pool time.cloudflare.com iburst
 pool time.google.com iburst
 
-# 允许本地网络客户端
-allow all
-
-# 记录漂移
 driftfile /var/lib/chrony/drift
 makestep 1.0 3
 rtcsync
@@ -160,163 +150,166 @@ EOF
 
     systemctl enable --now chronyd >/dev/null
     sleep 3
-
     echo -e "${GREEN}✅ Chrony 时间同步已启用${PLAIN}"
-    chronyc tracking | grep "Reference ID\|Stratum\|Last offset"
+    chronyc tracking | grep -E "Reference ID|Stratum|Last offset"
 }
 
-# --- 4. Swap / ZRAM 虚拟内存管理 ---
+# --- 4. 查看 ACME 证书 ---
+view_certs() {
+    echo -e "${BLUE}============= 已申请的 SSL 证书 =============${PLAIN}"
+    local cert_root="/root/.acme.sh"
+    if [ -d "$cert_root" ]; then
+        ls -d $cert_root/*/ | grep -v "_ecc" | while read dir; do
+            domain=$(basename "$dir")
+            if [[ "$domain" != "http.header" && "$domain" != "acme.sh" ]]; then
+                echo -e "域名: ${SKYBLUE}$domain${PLAIN}"
+                echo -e "路径: ${YELLOW}$dir${PLAIN}"
+                echo "-----------------------------------------------"
+            fi
+        done
+    else
+        echo -e "${RED}未检测到 acme.sh 目录。${PLAIN}"
+    fi
+}
+
+# --- 5. 全能日志查看器 ---
+view_logs() {
+    echo -e "${BLUE}============= 服务运行日志 (实时最近 20 行) =============${PLAIN}"
+    
+    if systemctl is-active --quiet xray; then
+        echo -e "${YELLOW}>>> Xray Core:${PLAIN}"
+        journalctl -u xray --no-pager -n 20
+        echo ""
+    fi
+    
+    if systemctl is-active --quiet sing-box; then
+        echo -e "${YELLOW}>>> Sing-box Core:${PLAIN}"
+        journalctl -u sing-box --no-pager -n 20
+        echo ""
+    fi
+
+    if systemctl is-active --quiet hysteria-server; then
+        echo -e "${YELLOW}>>> Hysteria 2 Official:${PLAIN}"
+        journalctl -u hysteria-server --no-pager -n 20
+        echo ""
+    fi
+    
+    if systemctl is-active --quiet cloudflared; then
+        echo -e "${YELLOW}>>> Cloudflare Tunnel:${PLAIN}"
+        journalctl -u cloudflared --no-pager -n 20
+        echo ""
+    fi
+    
+    if ! systemctl is-active --quiet xray && ! systemctl is-active --quiet sing-box \
+       && ! systemctl is-active --quiet hysteria-server && ! systemctl is-active --quiet cloudflared; then
+         echo -e "${RED}未检测到常见代理服务运行。${PLAIN}"
+    fi
+}
+
+# --- 6. Swap / ZRAM 虚拟内存管理 ---
 manage_swap() {
-    if [[ -d "/proc/vz" ]] || systemd-detect-virt | grep -q "lxc\|docker\|container"; then
+    if [[ -d "/proc/vz" ]] || systemd-detect-virt 2>/dev/null | grep -Eq "lxc|docker|container"; then
         echo -e "${RED}检测到容器或 OpenVZ，不支持传统 Swap${PLAIN}"
     fi
 
     while true; do
         clear
         echo -e "${BLUE}========= 虚拟内存管理 (Swap / ZRAM) =========${PLAIN}"
-        echo -e "当前状态:"
         swapon --show || echo -e "${YELLOW}无传统 Swap${PLAIN}"
-        if [[ -d /sys/block/zram0 ]]; then echo -e "${GREEN}ZRAM 已启用${PLAIN}"; fi
-        echo ""
+        [[ -d /sys/block/zram0 ]] && echo -e "${GREEN}ZRAM 已启用${PLAIN}"
         echo -e " ${GREEN}1.${PLAIN} 添加传统 Swap 文件"
-        echo -e " ${GREEN}2.${PLAIN} 启用 ZRAM（推荐 SSD，低内存 VPS）"
+        echo -e " ${GREEN}2.${PLAIN} 启用 ZRAM（推荐 SSD）"
         echo -e " ${RED}3.${PLAIN} 删除传统 Swap"
         echo -e " ${RED}4.${PLAIN} 禁用 ZRAM"
         echo -e " ${GRAY}0.${PLAIN} 返回"
         read -p "请选择: " choice
-
         case "$choice" in
-            1)
-                read -p "输入 Swap 大小 (MB，建议 RAM 的 1-2 倍): " size
-                if ! [[ "$size" =~ ^[0-9]+$ ]] || [[ "$size" -le 0 ]]; then
-                    echo -e "${RED}无效输入${PLAIN}"; read -p "按回车继续..."; continue
-                fi
-                if grep -q swap /etc/fstab; then
-                    echo -e "${RED}已存在 Swap，请先删除${PLAIN}"; read -p "按回车继续..."; continue
-                fi
-                fallocate -l "${size}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="$size"
-                chmod 600 /swapfile
-                mkswap /swapfile
-                swapon /swapfile
+            1)  # 添加 Swap（同原逻辑，优化为 fallocate 优先）
+                read -p "Swap 大小 (MB): " size
+                [[ ! "$size" =~ ^[0-9]+$ || "$size" -le 0 ]] && { echo -e "${RED}无效${PLAIN}"; continue; }
+                grep -q swap /etc/fstab && { echo -e "${RED}已存在，请先删除${PLAIN}"; continue; }
+                fallocate -l "${size}M" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count="$size"
+                chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
                 echo '/swapfile none swap defaults 0 0' >> /etc/fstab
-                echo -e "${GREEN}✅ ${size}MB Swap 已添加${PLAIN}"
+                echo -e "${GREEN}✅ ${size}MB Swap 添加成功${PLAIN}"
                 ;;
-            2)
-                if [[ -d /sys/block/zram0 ]]; then
-                    echo -e "${YELLOW}ZRAM 已存在${PLAIN}"
-                else
-                    modprobe zram
-                    echo lz4 > /sys/block/zram0/comp_algorithm
-                    echo 2G > /sys/block/zram0/disksize  # 可调整
-                    mkswap /dev/zram0
-                    swapon /dev/zram0
-                    echo '/dev/zram0 none swap defaults 0 0' >> /etc/fstab
-                    echo -e "${GREEN}✅ ZRAM 已启用（2GB 压缩内存）${PLAIN}"
-                fi
+            2)  # 启用 ZRAM
+                modprobe zram
+                echo lz4 > /sys/block/zram0/comp_algorithm
+                echo 2G > /sys/block/zram0/disksize
+                mkswap /dev/zram0; swapon /dev/zram0
+                echo '/dev/zram0 none swap defaults 0 0' >> /etc/fstab
+                echo -e "${GREEN}✅ ZRAM (2GB) 已启用${PLAIN}"
                 ;;
-            3)
-                if grep -q swap /etc/fstab; then
-                    swapoff -a
-                    sed -i '/swap/d' /etc/fstab
-                    rm -f /swapfile
-                    echo -e "${GREEN}✅ Swap 已删除${PLAIN}"
-                else
-                    echo -e "${RED}无 Swap 可删除${PLAIN}"
-                fi
+            3)  # 删除 Swap
+                swapoff -a; sed -i '/swap/d' /etc/fstab; rm -f /swapfile
+                echo -e "${GREEN}✅ Swap 已删除${PLAIN}"
                 ;;
-            4)
-                if [[ -d /sys/block/zram0 ]]; then
-                    swapoff /dev/zram0
-                    echo 0 > /sys/block/zram0/disksize
-                    rmmod zram
-                    sed -i '/zram/d' /etc/fstab
-                    echo -e "${GREEN}✅ ZRAM 已禁用${PLAIN}"
-                fi
+            4)  # 禁用 ZRAM
+                swapoff /dev/zram0; echo 1 > /sys/block/zram0/reset; rmmod zram
+                sed -i '/zram/d' /etc/fstab
+                echo -e "${GREEN}✅ ZRAM 已禁用${PLAIN}"
                 ;;
             0) return ;;
-            *) echo -e "${RED}无效选择${PLAIN}"; sleep 1 ;;
         esac
         read -p "按回车继续..."
     done
 }
 
-# --- 5. 端口跳跃管理 (nftables 现代版) ---
+# --- 7. 端口跳跃管理 (nftables) ---
 manage_port_hopping() {
-    if ! command -v nft >/dev/null; then
-        echo -e "${YELLOW}正在安装 nftables...${PLAIN}"
-        apt install -y nftables || yum install -y nftables
-    fi
+    command -v nft >/dev/null || { apt install -y nftables || yum install -y nftables; }
 
     while true; do
         clear
         echo -e "${BLUE}========= UDP 端口跳跃 (nftables) =========${PLAIN}"
-        echo -e " ${GREEN}1.${PLAIN} 添加跳跃规则"
-        echo -e " ${RED}2.${PLAIN} 删除跳跃规则"
-        echo -e " ${SKYBLUE}3.${PLAIN} 查看当前规则"
-        echo -e " ${GRAY}0.${PLAIN} 返回"
+        echo -e " ${GREEN}1.${PLAIN} 添加规则   ${RED}2.${PLAIN} 删除规则   ${SKYBLUE}3.${PLAIN} 查看规则   ${GRAY}0.${PLAIN} 返回"
         read -p "请选择: " choice
-
         case "$choice" in
             1)
-                read -p "真实监听端口 (如 443): " target
-                read -p "起始端口 (如 20000): " start
-                read -p "结束端口 (如 30000): " end
-                [[ -z "$target" || -z "$start" || -z "$end" ]] && { echo "参数不能为空"; continue; }
+                read -p "真实端口: " target; read -p "起始端口: " start; read -p "结束端口: " end
                 nft add rule nat prerouting udp dport "$start"-"$end" redirect to :"$target"
                 nft list ruleset > /etc/nftables.conf
-                echo -e "${GREEN}规则已添加并持久化${PLAIN}"
+                echo -e "${GREEN}✅ 规则添加并持久化${PLAIN}"
                 ;;
             2)
                 nft -a list table nat
-                read -p "输入要删除的 handle 编号: " handle
+                read -p "输入 handle 编号: " handle
                 nft delete rule nat prerouting handle "$handle"
                 nft list ruleset > /etc/nftables.conf
-                echo -e "${GREEN}规则已删除${PLAIN}"
                 ;;
-            3)
-                nft list table nat
-                ;;
+            3) nft list table nat ;;
             0) return ;;
         esac
         read -p "按回车继续..."
     done
 }
 
-# --- 6. SSH 安全加固 + Fail2Ban ---
+# --- 8. SSH 安全加固 + Fail2Ban ---
 configure_ssh_security() {
     backup_file /etc/ssh/sshd_config
+    mkdir -p ~/.ssh && chmod 700 ~/.ssh
 
-    mkdir -p ~/.ssh
-    chmod 700 ~/.ssh
-
-    echo -e "${YELLOW}第一步: 导入公钥${PLAIN}"
-    read -p "从 GitHub 导入？输入用户名（留空手动）: " gh_user
+    echo -e "${YELLOW}导入公钥${PLAIN}"
+    read -p "GitHub 用户名（留空手动）: " gh_user
     if [[ -n "$gh_user" ]]; then
-        pub_key=$(curl -sSf "https://github.com/${gh_user}.keys" || echo "")
-        [[ -z "$pub_key" ]] && echo -e "${RED}拉取失败或无公钥${PLAIN}"
+        pub_key=$(curl -sSf "https://github.com/${gh_user}.keys")
     else
-        read -p "粘贴公钥（直接回车跳过）: " pub_key
+        read -p "粘贴公钥（回车跳过）: " pub_key
     fi
+    [[ -n "$pub_key" ]] && echo "$pub_key" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo -e "${GREEN}✅ 公钥导入成功${PLAIN}"
 
-    if [[ -n "$pub_key" ]]; then
-        echo "$pub_key" >> ~/.ssh/authorized_keys
-        chmod 600 ~/.ssh/authorized_keys
-        echo -e "${GREEN}✅ 公钥已导入${PLAIN}"
-    fi
-
-    read -p "是否禁用密码登录？(y/n): " disable_pass
-    if [[ "$disable_pass" == "y" ]]; then
+    read -p "禁用密码登录？(y/n): " disable_pass
+    [[ "$disable_pass" == "y" ]] && {
         sed -i '/^PasswordAuthentication/d' /etc/ssh/sshd_config
         sed -i '/^PubkeyAuthentication/d' /etc/ssh/sshd_config
         echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
         echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
         echo -e "${GREEN}✅ 已禁用密码登录${PLAIN}"
-    fi
+    }
 
-    echo -e "${YELLOW}正在安装 Fail2Ban 防暴力破解...${PLAIN}"
-    if command -v apt >/dev/null; then apt install -y fail2ban; fi
-    if command -v yum >/dev/null || command -v dnf >/dev/null; then yum install -y fail2ban || dnf install -y fail2ban; fi
-
+    echo -e "${YELLOW}安装 Fail2Ban${PLAIN}"
+    apt install -y fail2ban || yum install -y fail2ban || dnf install -y fail2ban
     cat >/etc/fail2ban/jail.local <<EOF
 [sshd]
 enabled = true
@@ -324,18 +317,12 @@ maxretry = 5
 bantime = 3600
 findtime = 600
 EOF
-
-    systemctl enable --now fail2ban >/dev/null
+    systemctl enable --now fail2ban
     echo -e "${GREEN}✅ Fail2Ban 已启用${PLAIN}"
 
     sshd -t && systemctl restart sshd
-    echo -e "${GREEN}SSH 加固完成！建议新窗口测试登录${PLAIN}"
-    read -p "按回车返回..."
+    echo -e "${GREEN}SSH 加固完成！请在新窗口测试登录${PLAIN}"
 }
-
-# --- 其他函数保持不变（view_certs, view_logs）---
-view_certs() { ... }  # 原函数保留
-view_logs() { ... }   # 原函数保留
 
 # ==========================================
 # 主菜单
@@ -346,12 +333,12 @@ show_menu() {
         echo -e "${GREEN}============================================${PLAIN}"
         echo -e "${GREEN}      系统运维工具箱 v3.0 (2025 优化版)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
-        echo -e " ${SKYBLUE}1.${PLAIN} 开启 BBRv3 加速 + 高并发优化"
-        echo -e " ${SKYBLUE}2.${PLAIN} SSH 防断连优化（Web SSH 推荐）"
+        echo -e " ${SKYBLUE}1.${PLAIN} BBR 加速 + 高并发优化"
+        echo -e " ${SKYBLUE}2.${PLAIN} SSH 防断连优化"
         echo -e " ${SKYBLUE}3.${PLAIN} 高精度时间同步 (Chrony)"
         echo -e " --------------------------------------------"
         echo -e " ${SKYBLUE}4.${PLAIN} 查看 ACME 证书"
-        echo -e " ${SKYBLUE}5.${PLAIN} 查看服务日志 (Xray/SB/Hy2/CF)"
+        echo -e " ${SKYBLUE}5.${PLAIN} 查看服务日志"
         echo -e " ${SKYBLUE}6.${PLAIN} 虚拟内存管理 (Swap/ZRAM)"
         echo -e " --------------------------------------------"
         echo -e " ${GREEN}7.${PLAIN} UDP 端口跳跃 (nftables)"
@@ -371,7 +358,7 @@ show_menu() {
             0) exit 0 ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
-        read -p "按回车继续..." < /dev/tty
+        read -p "按回车继续..." </dev/tty
     done
 }
 
