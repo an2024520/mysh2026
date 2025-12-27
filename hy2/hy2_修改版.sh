@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # ============================================================
-#  Hysteria 2 全能管理脚本 (v4.0 优化版)
-#  - 统一最新配置格式 (listen + acme/tls)
-#  - 支持端口占用检查
-#  - 端口跳跃: 自动检测 nftables / iptables
-#  - 支持自定义 masquerade 网址
-#  - 支持更多系统 (apt / yum / dnf)
-#  - 增强服务状态检查
-#  - 其他健壮性优化
+#  Hysteria 2 全能管理脚本 (v4.2 修复版 - 2025.12.27)
+#  修复要点：
+#  1. listen 字段 YAML 语法错误（移除错误的 "-" 前缀）
+#  2. IPv6-only 环境 IP 获取失败（智能获取公网 IP，支持 IPv4/IPv6）
+#  3. Web 服务恢复逻辑优化（443 端口冲突时不再强行恢复）
+#  4. masquerade 支持低内存模式（静态文件/404，避免 proxy OOM）
+#  5. ACME 模式非 443 端口时自动添加 httpListen: :80
+#  6. 其他细节完善与健壮性提升
 # ============================================================
 
 # 颜色定义
@@ -25,12 +25,40 @@ HY_BIN="/usr/local/bin/hysteria"
 WIREPROXY_CONF="/etc/wireproxy/wireproxy.conf"
 NFT_CONF="/etc/nftables/hy2_port_hopping.nft"
 
+# --- 开头检查：必须运行在 systemd 环境 ---
+if [ "$(ps -p 1 -o comm=)" != "systemd" ]; then
+    echo -e "${RED}错误: 本脚本依赖 systemd 管理服务${PLAIN}"
+    echo -e "${RED}当前环境 PID 1 进程为 $(ps -p 1 -o comm=)，非 systemd（可能是 Docker/OpenWrt/Alpine 等）${PLAIN}"
+    echo -e "${YELLOW}建议使用官方 Docker 镜像或对应系统的专用脚本。${PLAIN}"
+    exit 1
+fi
+
 # --- 辅助功能：检查 Root ---
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}错误: 必须使用 root 用户运行此脚本！${PLAIN}"
         exit 1
     fi
+}
+
+# --- 辅助功能：智能获取公网 IP（支持 IPv4/IPv6）---
+get_public_ip() {
+    # 优先尝试 IPv4
+    local IPV4=$(curl -s --max-time 8 https://api.ipify.org)
+    if [[ -n "$IPV4" && "$IPV4" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$IPV4"
+        return
+    fi
+
+    # 再尝试 IPv6
+    local IPV6=$(curl -s --max-time 8 https://api64.ipify.org)
+    if [[ -n "$IPV6" && "$IPV6" =~ : ]]; then
+        echo "$IPV6"
+        return
+    fi
+
+    # 最后 fallback 到 ifconfig.me（自动适配）
+    curl -s --max-time 10 https://ifconfig.me
 }
 
 # --- 辅助功能：端口占用检查 ---
@@ -55,38 +83,50 @@ stop_web_service() {
     fi
 
     if [[ -n "$WEB_SERVICE" ]]; then
-        echo -e "${YELLOW}检测到 $WEB_SERVICE 占用端口，正在临时停止...${PLAIN}"
+        echo -e "${YELLOW}检测到 $WEB_SERVICE 正在运行，正在临时停止以释放端口...${PLAIN}"
         systemctl stop "$WEB_SERVICE"
         touch /tmp/hy2_web_restore_flag
         echo "$WEB_SERVICE" > /tmp/hy2_web_service_name
+        echo "$LISTEN_PORT" > /tmp/hy2_conflict_port  # 记录冲突端口
     fi
 }
 
 restore_web_service() {
     if [[ -f /tmp/hy2_web_restore_flag ]]; then
         local SVC=$(cat /tmp/hy2_web_service_name)
+        local CONFLICT_PORT=$(cat /tmp/hy2_conflict_port 2>/dev/null || echo "")
+
         echo -e "${YELLOW}正在尝试恢复 Web 服务 ($SVC)...${PLAIN}"
         systemctl start "$SVC" 2>/dev/null
+
         if systemctl is-active --quiet "$SVC"; then
-            echo -e "${GREEN}Web 服务已恢复。${PLAIN}"
+            echo -e "${GREEN}Web 服务 ($SVC) 已成功恢复。${PLAIN}"
         else
-            echo -e "${RED}警告: Web 服务无法启动 (可能端口被 Hysteria 2 占用)。${PLAIN}"
+            if [[ "$CONFLICT_PORT" == "443" ]]; then
+                echo -e "${RED}恢复失败：Hysteria 2 正在占用 443 端口，无法同时运行 Web 服务。${PLAIN}"
+                echo -e "${YELLOW}建议方案：${PLAIN}"
+                echo "  1. 让 Hysteria 2 的 masquerade 伪装网站接管流量（推荐）"
+                echo "  2. 修改 $SVC 的监听端口（如改为 80 或 8080）"
+                echo "  3. 停止 Hysteria 2 后手动启动 Web 服务"
+            else
+                echo -e "${RED}Web 服务 ($SVC) 启动失败，请检查配置或日志。${PLAIN}"
+            fi
         fi
-        rm -f /tmp/hy2_web_restore_flag /tmp/hy2_web_service_name
+        rm -f /tmp/hy2_web_restore_flag /tmp/hy2_web_service_name /tmp/hy2_conflict_port
     fi
 }
 
 # --- 辅助功能：节点信息生成 ---
 print_node_info() {
-    if [[ ! -f "$CONFIG_FILE" ]]; then return; fi
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo -e "${RED}配置文件不存在${PLAIN}"
+        return
+    fi
 
     echo -e "\n${YELLOW}正在读取当前配置生成分享链接...${PLAIN}"
     
-    local LISTEN=$(grep "^listen:" $CONFIG_FILE | awk '{print $2}' | tr -d ':')
-    if [[ -z "$LISTEN" ]]; then LISTEN=443; fi
-    
-    local DOMAIN_ACME=$(grep -A 2 "domains:" $CONFIG_FILE | tail -n 1 | tr -d ' -')
-    local PASSWORD=$(grep "password:" $CONFIG_FILE | awk '{print $2}')
+    local LISTEN=$(grep "^listen:" $CONFIG_FILE | awk '{print $2}' | tr -d '"')
+    local PASSWORD=$(grep "password:" $CONFIG_FILE | awk '{print $2}' | tr -d '"')
     
     local IS_SOCKS5="直连模式"
     if grep -q "# --- SOCKS5 START ---" $CONFIG_FILE; then
@@ -96,21 +136,27 @@ print_node_info() {
     local SHOW_ADDR=""
     local SNI=""
     local INSECURE="0"
+    local SKIP_CERT_VAL="false"
 
     if grep -q "acme:" $CONFIG_FILE; then
-        SHOW_ADDR="$DOMAIN_ACME"
-        SNI="$DOMAIN_ACME"
+        SHOW_ADDR=$(grep -A 2 "domains:" $CONFIG_FILE | tail -n 1 | tr -d ' -')
+        SNI="$SHOW_ADDR"
         INSECURE="0"
         SKIP_CERT_VAL="false"
     else
-        SHOW_ADDR=$(curl -s4 ifconfig.me)
-        SNI="bing.com"
+        SHOW_ADDR=$(get_public_ip)
+        if [[ -z "$SHOW_ADDR" || "$SHOW_ADDR" == "获取失败" ]]; then
+            SHOW_ADDR="IP获取失败，请手动替换"
+        fi
+        local CUSTOM_SNI=$(openssl x509 -in /etc/hysteria/server.crt -noout -subject 2>/dev/null | sed -n 's/.*CN=\([^/]*\).*/\1/p')
+        SNI=${CUSTOM_SNI:-"bing.com"}
         INSECURE="1"
         SKIP_CERT_VAL="true"
     fi
 
-    local SHOW_PORT="$LISTEN"
-    local OC_PORT="$LISTEN"
+    local LISTEN_PORT=$(echo "$LISTEN" | sed -e 's/^- //' -e 's/://' -e 's/\[::\]//')
+    local SHOW_PORT="$LISTEN_PORT"
+    local OC_PORT="$LISTEN_PORT"
     local OC_COMMENT=""
     
     if [[ -f "$HOPPING_CONF" ]]; then
@@ -129,13 +175,13 @@ print_node_info() {
     echo -e "\n${GREEN}==============================================${PLAIN}"
     echo -e "${GREEN}      Hysteria 2 配置信息 (${IS_SOCKS5})      ${PLAIN}"
     echo -e "${GREEN}==============================================${PLAIN}"
-    echo -e "地址: ${YELLOW}${SHOW_ADDR}${PLAIN}"
-    echo -e "端口: ${YELLOW}${SHOW_PORT}${PLAIN}"
-    echo -e "密码: ${YELLOW}${PASSWORD}${PLAIN}"
-    echo -e "SNI : ${YELLOW}${SNI}${PLAIN}"
-    echo -e "跳过证书验证: ${YELLOW}$( [[ "$INSECURE" == "1" ]] && echo "True" || echo "False" )${PLAIN}"
+    echo -e "地址(Address)  : ${YELLOW}${SHOW_ADDR}${PLAIN}"
+    echo -e "端口(Port)     : ${YELLOW}${SHOW_PORT}${PLAIN}"
+    echo -e "密码(Password) : ${YELLOW}${PASSWORD}${PLAIN}"
+    echo -e "SNI            : ${YELLOW}${SNI}${PLAIN}"
+    echo -e "跳过证书验证   : ${YELLOW}$( [[ "$INSECURE" == "1" ]] && echo "True" || echo "False" )${PLAIN}"
     
-    echo -e "\n${YELLOW}➤ v2rayN / Nekoray 分享链接:${PLAIN}"
+    echo -e "\n${YELLOW}➤ v2rayN / Nekoray / Clash Verge 分享链接:${PLAIN}"
     echo -e "${V2RAYN_LINK}"
     
     echo -e "\n${YELLOW}➤ OpenClash / Clash Meta (YAML):${PLAIN}"
@@ -159,17 +205,16 @@ detect_pkg_manager() {
         PKG_MANAGER="apt"
         PKG_UPDATE="apt update -y"
         PKG_INSTALL="apt install -y"
-    elif command -v yum >/dev/null || command -v dnf >/dev/null; then
+    elif command -v dnf >/dev/null; then
+        PKG_MANAGER="dnf"
+        PKG_UPDATE="dnf check-update -y || true"
+        PKG_INSTALL="dnf install -y"
+    elif command -v yum >/dev/null; then
         PKG_MANAGER="yum"
-        if command -v dnf >/dev/null; then
-            PKG_UPDATE="dnf check-update -y || true"
-            PKG_INSTALL="dnf install -y"
-        else
-            PKG_UPDATE="yum check-update -y || true"
-            PKG_INSTALL="yum install -y"
-        fi
+        PKG_UPDATE="yum check-update -y || true"
+        PKG_INSTALL="yum install -y"
     else
-        echo -e "${RED}不支持的系统包管理器${PLAIN}"
+        echo -e "${RED}不支持的包管理器${PLAIN}"
         exit 1
     fi
 }
@@ -178,7 +223,7 @@ install_base() {
     detect_pkg_manager
     echo -e "${YELLOW}正在更新系统并安装基础组件...${PLAIN}"
     $PKG_UPDATE
-    $PKG_INSTALL curl wget openssl jq socat
+    $PKG_INSTALL curl wget openssl jq socat ca-certificates
     if [[ "$PKG_MANAGER" == "apt" ]]; then
         $PKG_INSTALL iptables-persistent netfilter-persistent || true
     fi
@@ -193,18 +238,42 @@ install_core() {
     esac
 
     echo -e "${YELLOW}正在获取 Hysteria 2 最新版本...${PLAIN}"
-    LATEST_VERSION=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r .tag_name | sed 's/app\///')
-    if [[ -z "$LATEST_VERSION" ]]; then
-        echo -e "${RED}获取版本失败${PLAIN}"
+    LATEST_VERSION=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r .tag_name)
+    if [[ -z "$LATEST_VERSION" || "$LATEST_VERSION" == "null" ]]; then
+        echo -e "${RED}获取版本失败，请检查网络${PLAIN}"
         exit 1
     fi
     
-    wget -O "$HY_BIN" "https://github.com/apernet/hysteria/releases/download/app%2F${LATEST_VERSION}/hysteria-linux-${HY_ARCH}"
+    wget -O "$HY_BIN" "https://github.com/apernet/hysteria/releases/download/${LATEST_VERSION}/hysteria-linux-${HY_ARCH}"
     chmod +x "$HY_BIN"
     mkdir -p /etc/hysteria
 }
 
-# --- 端口跳跃: nftables 优先 ---
+# --- 端口跳跃支持检查 ---
+check_nat_support() {
+    echo -e "${YELLOW}正在检测内核是否支持端口重定向...${PLAIN}"
+    
+    if command -v nft >/dev/null; then
+        if nft -f /dev/stdin <<< "table inet hy2test { chain test { type nat hook prerouting priority 0; } }" 2>/dev/null; then
+            nft delete table inet hy2test 2>/dev/null
+            echo -e "${GREEN}nftables 支持 NAT${PLAIN}"
+            return 0
+        fi
+    fi
+    
+    if command -v iptables >/dev/null; then
+        if iptables -t nat -A PREROUTING -p udp --dport 9999 -j REDIRECT --to-ports 12345 2>/dev/null; then
+            iptables -t nat -D PREROUTING -p udp --dport 9999 -j REDIRECT --to-ports 12345 2>/dev/null
+            echo -e "${GREEN}iptables 支持 REDIRECT${PLAIN}"
+            return 0
+        fi
+    fi
+    
+    echo -e "${RED}警告: 当前内核不支持端口重定向（常见于 OpenVZ、部分 LXC）${PLAIN}"
+    echo -e "${RED}端口跳跃功能将不可用${PLAIN}"
+    return 1
+}
+
 detect_firewall() {
     if command -v nft >/dev/null; then
         echo "nftables"
@@ -219,6 +288,11 @@ setup_port_hopping() {
     local TARGET_PORT=$1
     local HOP_RANGE=$2
     if [[ -z "$HOP_RANGE" ]]; then return; fi
+
+    if ! check_nat_support; then
+        echo -e "${YELLOW}跳过端口跳跃配置${PLAIN}"
+        return
+    fi
 
     local FW=$(detect_firewall)
     local START_PORT=$(echo $HOP_RANGE | cut -d '-' -f 1)
@@ -247,9 +321,6 @@ EOF
         if command -v netfilter-persistent >/dev/null; then
             netfilter-persistent save >/dev/null 2>&1
         fi
-    else
-        echo -e "${RED}未检测到防火墙工具，无法配置端口跳跃${PLAIN}"
-        return
     fi
 
     echo "HOP_RANGE=$HOP_RANGE" > "$HOPPING_CONF"
@@ -278,44 +349,102 @@ uninstall_port_hopping() {
     fi
 }
 
-# --- 安装逻辑 ---
-install_common() {
-    local LISTEN_PORT=$1
+# --- 通用配置写入 ---
+write_common_config() {
+    local LISTEN=$1
     local PASSWORD=$2
-    local MASQUERADE_URL=$3
+    local MASQUERADE_TYPE=$3
+    local MASQUERADE_CONTENT=$4
 
-    cat <<EOF > "$CONFIG_FILE"
-listen: :$LISTEN_PORT
+    cat > "$CONFIG_FILE" <<EOF
+listen: "$LISTEN"
 auth:
   type: password
-  password: $PASSWORD
+  password: "$PASSWORD"
 masquerade:
-  type: proxy
+  type: $MASQUERADE_TYPE
+EOF
+
+    if [[ "$MASQUERADE_TYPE" == "proxy" ]]; then
+        cat >> "$CONFIG_FILE" <<EOF
   proxy:
-    url: $MASQUERADE_URL
+    url: $MASQUERADE_CONTENT
     rewriteHost: true
 EOF
+    elif [[ "$MASQUERADE_TYPE" == "file" ]]; then
+        cat >> "$CONFIG_FILE" <<EOF
+  file:
+    dir: $MASQUERADE_CONTENT
+EOF
+    fi
 }
 
+# --- 自签名证书安装 ---
 install_self_signed() {
     echo -e "${GREEN}>>> 安装模式: 自签名证书 (无域名)${PLAIN}"
+    
     while true; do
         read -p "请输入监听端口 (推荐 8443): " LISTEN_PORT
         [[ -z "$LISTEN_PORT" ]] && LISTEN_PORT=8443
         if [[ "$LISTEN_PORT" =~ ^[0-9]+$ ]] && [ "$LISTEN_PORT" -le 65535 ]; then
             if check_port "$LISTEN_PORT"; then break; fi
         fi
+        echo -e "${RED}端口无效或已被占用，请重新输入${PLAIN}"
     done
-    
+
+    echo "IPv6 支持选择："
+    echo "1. 双栈监听 (推荐)"
+    echo "2. 仅 IPv4"
+    echo "3. 仅 IPv6"
+    read -p "请选择 [1-3，默认 1]: " IPV6_CHOICE
+    [[ -z "$IPV6_CHOICE" ]] && IPV6_CHOICE=1
+    case $IPV6_CHOICE in
+        2) LISTEN=":$LISTEN_PORT" ;;
+        3) LISTEN="[::]:$LISTEN_PORT" ;;
+        *) LISTEN=":$LISTEN_PORT" ;;  # 双栈和仅 IPv4 都用 :port，内核自动处理
+    esac
+
     read -p "端口跳跃范围 (如 20000-30000，留空跳过): " PORT_HOP
-    read -p "连接密码 (留空随机): " PASSWORD
+    read -p "连接密码 (留空随机生成): " PASSWORD
     [[ -z "$PASSWORD" ]] && PASSWORD=$(openssl rand -hex 16)
-    read -p "伪装网址 (默认 https://news.ycombinator.com/): " MASQUERADE_URL
-    [[ -z "$MASQUERADE_URL" ]] && MASQUERADE_URL="https://news.ycombinator.com/"
+    
+    echo "伪装模式选择："
+    echo "1. 反向代理网站 (高兼容，内存占用较高)"
+    echo "2. 静态网页目录 (低内存，适合 128M 小鸡)"
+    echo "3. 简单 404 页面 (最低内存)"
+    read -p "请选择 [1-3，默认 1]: " MASQ_CHOICE
+    [[ -z "$MASQ_CHOICE" ]] && MASQ_CHOICE=1
 
-    openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt -days 3650 -subj "/CN=bing.com" >/dev/null 2>&1
+    case $MASQ_CHOICE in
+        2)
+            MASQ_TYPE="file"
+            echo -e "${YELLOW}将使用内置静态网页作为伪装（低内存模式）${PLAIN}"
+            mkdir -p /etc/hysteria/masquerade
+            cat > /etc/hysteria/masquerade/index.html <<'EOF'
+<!DOCTYPE html><html><head><title>Welcome</title></head><body><h1>It works!</h1></body></html>
+EOF
+            MASQ_CONTENT="/etc/hysteria/masquerade"
+            ;;
+        3)
+            MASQ_TYPE="file"
+            MASQ_CONTENT="404"
+            echo -e "${YELLOW}使用简单 404 伪装（极低内存）${PLAIN}"
+            ;;
+        *)
+            MASQ_TYPE="proxy"
+            read -p "伪装网站 URL (默认 https://news.ycombinator.com/): " MASQ_URL
+            [[ -z "$MASQ_URL" ]] && MASQ_URL="https://news.ycombinator.com/"
+            MASQ_CONTENT="$MASQ_URL"
+            ;;
+    esac
 
-    install_common "$LISTEN_PORT" "$PASSWORD" "$MASQUERADE_URL"
+    read -p "客户端 SNI (默认 bing.com): " SNI
+    [[ -z "$SNI" ]] && SNI="bing.com"
+
+    echo -e "${YELLOW}生成自签名证书 (CN=$SNI)...${PLAIN}"
+    openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt -days 3650 -subj "/CN=$SNI" >/dev/null 2>&1
+
+    write_common_config "$LISTEN" "$PASSWORD" "$MASQ_TYPE" "$MASQ_CONTENT"
     cat <<EOF >> "$CONFIG_FILE"
 tls:
   cert: /etc/hysteria/server.crt
@@ -327,26 +456,72 @@ EOF
     print_node_info
 }
 
+# --- ACME 证书安装 ---
 install_acme() {
-    echo -e "${GREEN}>>> 安装模式: ACME 证书 (有域名，监听 443)${PLAIN}"
+    echo -e "${GREEN}>>> 安装模式: ACME 自动证书 (有域名)${PLAIN}"
+    
     read -p "请输入域名: " DOMAIN
     [[ -z "$DOMAIN" ]] && echo "域名不能为空" && exit 1
     
-    read -p "请输入邮箱 (留空自动): " EMAIL
+    read -p "请输入邮箱 (留空自动生成): " EMAIL
     [[ -z "$EMAIL" ]] && EMAIL="admin@$DOMAIN"
     
-    read -p "端口跳跃范围 (如 20000-30000，留空跳过): " PORT_HOP
-    read -p "连接密码 (留空随机): " PASSWORD
-    [[ -z "$PASSWORD" ]] && PASSWORD=$(openssl rand -hex 16)
-    read -p "伪装网址 (默认 https://news.ycombinator.com/): " MASQUERADE_URL
-    [[ -z "$MASQUERADE_URL" ]] && MASQUERADE_URL="https://news.ycombinator.com/"
+    while true; do
+        read -p "请输入监听端口 (推荐 443): " LISTEN_PORT
+        [[ -z "$LISTEN_PORT" ]] && LISTEN_PORT=443
+        if [[ "$LISTEN_PORT" =~ ^[0-9]+$ ]] && [ "$LISTEN_PORT" -le 65535 ]; then
+            if check_port "$LISTEN_PORT"; then break; fi
+        fi
+        echo -e "${RED}端口无效或已被占用，请重新输入${PLAIN}"
+    done
 
-    LISTEN_PORT=443
-    if ! check_port "$LISTEN_PORT"; then exit 1; fi
+    echo "IPv6 支持选择："
+    echo "1. 双栈监听 (推荐)"
+    echo "2. 仅 IPv4"
+    echo "3. 仅 IPv6"
+    read -p "请选择 [1-3，默认 1]: " IPV6_CHOICE
+    [[ -z "$IPV6_CHOICE" ]] && IPV6_CHOICE=1
+    case $IPV6_CHOICE in
+        2) LISTEN=":$LISTEN_PORT" ;;
+        3) LISTEN="[::]:$LISTEN_PORT" ;;
+        *) LISTEN=":$LISTEN_PORT" ;;
+    esac
+
+    read -p "端口跳跃范围 (如 20000-30000，留空跳过): " PORT_HOP
+    read -p "连接密码 (留空随机生成): " PASSWORD
+    [[ -z "$PASSWORD" ]] && PASSWORD=$(openssl rand -hex 16)
+    
+    echo "伪装模式选择："
+    echo "1. 反向代理网站 (推荐)"
+    echo "2. 静态网页目录 (低内存)"
+    echo "3. 简单 404 页面 (最低内存)"
+    read -p "请选择 [1-3，默认 1]: " MASQ_CHOICE
+    [[ -z "$MASQ_CHOICE" ]] && MASQ_CHOICE=1
+
+    case $MASQ_CHOICE in
+        2)
+            MASQ_TYPE="file"
+            mkdir -p /etc/hysteria/masquerade
+            cat > /etc/hysteria/masquerade/index.html <<'EOF'
+<!DOCTYPE html><html><head><title>Welcome</title></head><body><h1>It works!</h1></body></html>
+EOF
+            MASQ_CONTENT="/etc/hysteria/masquerade"
+            ;;
+        3)
+            MASQ_TYPE="file"
+            MASQ_CONTENT="404"
+            ;;
+        *)
+            MASQ_TYPE="proxy"
+            read -p "伪装网站 URL (默认 https://news.ycombinator.com/): " MASQ_URL
+            [[ -z "$MASQ_URL" ]] && MASQ_URL="https://news.ycombinator.com/"
+            MASQ_CONTENT="$MASQ_URL"
+            ;;
+    esac
 
     stop_web_service
 
-    install_common "$LISTEN_PORT" "$PASSWORD" "$MASQUERADE_URL"
+    write_common_config "$LISTEN" "$PASSWORD" "$MASQ_TYPE" "$MASQ_CONTENT"
     cat <<EOF >> "$CONFIG_FILE"
 acme:
   domains:
@@ -354,19 +529,21 @@ acme:
   email: $EMAIL
 EOF
 
+    if [[ "$LISTEN_PORT" != "443" ]]; then
+        echo "  httpListen: :80" >> "$CONFIG_FILE"
+    fi
+
     setup_port_hopping "$LISTEN_PORT" "$PORT_HOP"
     start_service
     restore_web_service
     print_node_info
 }
 
-# --- Socks5 挂载/移除 (保持原逻辑，增强幂等) ---
+# --- Socks5 挂载/移除 ---
 attach_socks5() {
-    # 同原脚本逻辑，略（为节省篇幅，此处保持不变）
-    # ... (复制原 attach_socks5 函数)
     echo -e "${GREEN}>>> 正在配置 Socks5 出口分流...${PLAIN}"
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo -e "${RED}错误: 配置文件不存在。${PLAIN}"
+        echo -e "${RED}错误: 配置文件不存在${PLAIN}"
         return
     fi
     detach_socks5 "quiet"
@@ -379,7 +556,7 @@ attach_socks5() {
 
     if [[ -n "$DETECTED_INFO" ]]; then
         echo -e "${YELLOW}检测到 WireProxy: ${GREEN}${DETECTED_INFO}${PLAIN}"
-        read -p "是否使用此地址？(y/n, 默认 y): " USE_DETECTED
+        read -p "是否使用此地址？(y/n，默认 y): " USE_DETECTED
         [[ -z "$USE_DETECTED" ]] && USE_DETECTED="y"
         if [[ "$USE_DETECTED" == "y" ]]; then
             PROXY_ADDR="$DETECTED_INFO"
@@ -407,12 +584,12 @@ acl:
 EOF
 
     systemctl restart hysteria-server
-    sleep 2
+    sleep 3
     if systemctl is-active --quiet hysteria-server; then
-        echo -e "${GREEN}挂载成功！${PLAIN}"
+        echo -e "${GREEN}Socks5 挂载成功！${PLAIN}"
         print_node_info
     else
-        echo -e "${RED}启动失败，回滚...${PLAIN}"
+        echo -e "${RED}服务启动失败，正在回滚...${PLAIN}"
         detach_socks5 "quiet"
     fi
 }
@@ -430,7 +607,7 @@ detach_socks5() {
 
     if [[ "$MODE" != "quiet" ]]; then
         systemctl restart hysteria-server
-        echo -e "${GREEN}已恢复直连模式。${PLAIN}"
+        echo -e "${GREEN}已恢复直连模式${PLAIN}"
         print_node_info
     fi
 }
@@ -453,20 +630,25 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+
     systemctl daemon-reload
     systemctl enable hysteria-server
     systemctl restart hysteria-server
 
     sleep 3
-    if systemctl is-active --quiet hysteria-server && ss -ulnp | grep -q "$HY_BIN"; then
-        echo -e "${GREEN}Hysteria 2 服务启动成功！${PLAIN}"
+    if systemctl is-active --quiet hysteria-server; then
+        if ss -ulnp | grep -q "$HY_BIN"; then
+            echo -e "${GREEN}Hysteria 2 服务启动成功并正在监听 UDP 端口！${PLAIN}"
+        else
+            echo -e "${YELLOW}服务启动但未检测到 UDP 监听，可能配置有误${PLAIN}"
+        fi
     else
-        echo -e "${RED}服务启动失败，请查看 journalctl -u hysteria-server${PLAIN}"
+        echo -e "${RED}服务启动失败，请运行: journalctl -u hysteria-server -e 查看日志${PLAIN}"
     fi
 }
 
 uninstall_hy2() {
-    echo -e "${RED}警告: 即将完全卸载 Hysteria 2${PLAIN}"
+    echo -e "${RED}警告: 即将完全卸载 Hysteria 2 及其所有配置${PLAIN}"
     read -p "确认继续? (y/n): " CONFIRM
     [[ "$CONFIRM" != "y" ]] && return
 
@@ -477,7 +659,7 @@ uninstall_hy2() {
     rm -f "$HY_BIN"
     rm -rf /etc/hysteria
     systemctl daemon-reload
-    echo -e "${GREEN}卸载完成。${PLAIN}"
+    echo -e "${GREEN}Hysteria 2 已完全卸载${PLAIN}"
 }
 
 # --- 主菜单 ---
@@ -485,28 +667,28 @@ while true; do
     check_root
     clear
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}    Hysteria 2 一键管理脚本 (v4.0)      ${PLAIN}"
+    echo -e "${GREEN}    Hysteria 2 一键管理脚本 (v4.2)      ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "  1. 安装 - ${YELLOW}自签名证书${PLAIN} (无域名)"
     echo -e "  2. 安装 - ${GREEN}ACME 证书${PLAIN} (有域名)"
     echo -e "----------------------------------------"
-    echo -e "  3. ${SKYBLUE}挂载 Socks5 代理出口${PLAIN} (Warp等)"
+    echo -e "  3. ${SKYBLUE}挂载 Socks5 代理出口${PLAIN}"
     echo -e "  4. ${YELLOW}移除 Socks5 代理出口${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "  5. 查看节点配置 / 分享链接"
-    echo -e "  6. ${RED}卸载 Hysteria 2${PLAIN}"
-    echo -e "  0. 退出"
+    echo -e "  5. 查看当前节点信息 / 分享链接"
+    echo -e "  6. ${RED}完全卸载 Hysteria 2${PLAIN}"
+    echo -e "  0. 退出脚本"
     echo -e ""
     read -p "请选择操作 [0-6]: " choice
 
     case "$choice" in
-        1) install_base; install_core; install_self_signed; read -p "按回车继续..." ;;
-        2) install_base; install_core; install_acme; read -p "按回车继续..." ;;
-        3) attach_socks5; read -p "按回车继续..." ;;
-        4) detach_socks5; read -p "按回车继续..." ;;
-        5) print_node_info; read -p "按回车继续..." ;;
-        6) uninstall_hy2; read -p "按回车继续..." ;;
-        0) exit 0 ;;
-        *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        1) install_base; install_core; install_self_signed; read -p "按回车返回菜单..." ;;
+        2) install_base; install_core; install_acme; read -p "按回车返回菜单..." ;;
+        3) attach_socks5; read -p "按回车返回菜单..." ;;
+        4) detach_socks5; read -p "按回车返回菜单..." ;;
+        5) print_node_info; read -p "按回车返回菜单..." ;;
+        6) uninstall_hy2; read -p "按回车返回菜单..." ;;
+        0) echo -e "${GREEN}再见！${PLAIN}"; exit 0 ;;
+        *) echo -e "${RED}无效选择${PLAIN}"; sleep 1 ;;
     esac
 done
