@@ -175,6 +175,7 @@ configure_ssh_security() {
     fi
 
     if [[ -n "$pub_key" ]]; then
+        backup_file ~/.ssh/authorized_keys  # 备份旧的 authorized_keys
         echo "$pub_key" > ~/.ssh/authorized_keys
         chmod 600 ~/.ssh/authorized_keys
         echo -e "${GREEN}✅ 公钥已覆写（旧密钥已清除）${PLAIN}"
