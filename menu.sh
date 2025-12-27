@@ -90,7 +90,7 @@ FILE_ADD_VISION="xray_vless_vision_reality.sh"
 FILE_ADD_WS="xray_vless_ws_tls.sh"
 FILE_ADD_TUNNEL="xray_vless_ws_tunnel.sh"
 # [新增] ML-KEM 模块
-FILE_ADD_MLKEM="xray_vless_xhttp_reality_ENC.sh"
+FILE_ADD_MLKEM="xray_vless_xhttp_reality_mlkem.sh"
 
 FILE_XRAY_WARP="xray_module_warp_native_route.sh"
 FILE_XRAY_INFO="xray_get_node_details.sh"
@@ -223,7 +223,7 @@ menu_xray() {
         echo -e " ${GREEN}5.${PLAIN} VLESS-WS-Tunnel      ${GRAY}[$FILE_ADD_TUNNEL]${PLAIN}"
         echo -e " ${GREEN}6.${PLAIN} VLESS-XHTTP-Reality  ${GRAY}[$FILE_ADD_XHTTP]${PLAIN}"
         # [新增] 选项 7
-        echo -e " ${GREEN}7.${PLAIN} VLESS-XHTTP-Reality-ENC      ${GRAY}[$FILE_ADD_MLKEM]${PLAIN}"
+        echo -e " ${GREEN}7.${PLAIN} VLESS-ENC-MLKEM      ${GRAY}[$FILE_ADD_MLKEM]${PLAIN}"
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}[路由与维护]${PLAIN}"
         # [调整] 序号顺延 7->8, 8->9, 9->10
