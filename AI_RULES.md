@@ -64,7 +64,7 @@
     ```
 
 * **服务端配置 (`config.json`)**:
-           将 **私钥** 注入到 `inbounds[].settings` 中：
+          * 将 **私钥** 注入到 `inbounds[].settings` 中：
 	```json
             {
            	"settings": {
@@ -72,9 +72,10 @@
              	   // 注意: 使用 XHTTP 时，'flow' 字段必须为空或直接省略
             	}
             }
-            ```
-           具体参考示例（VLESS + vlessEncryption+XHTTP + REALITY）：
-           ```json
+	```
+
+          * 具体参考示例（VLESS + vlessEncryption+XHTTP + REALITY）：
+	```json
            {
              "inbounds": [
                {
