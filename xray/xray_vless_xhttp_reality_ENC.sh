@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "v1.0"
 # ============================================================
 #  模块四：VLESS + XHTTP + Reality + ENC (抗量子加密版)
 #  - 协议: VLESS (vlessEncryption = ML-KEM-768)
