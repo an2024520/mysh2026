@@ -68,7 +68,7 @@ if [[ "$AUTO_SETUP" == "true" ]]; then
     # === 自动模式 ===
     PORT="${PORT:-2088}"
     echo -e "    端口 (PORT): ${GREEN}${PORT}${PLAIN}"
-    # 自动模式默认使用微软，连接性优于 Google
+    # 自动模式默认使用微软
     SNI="www.microsoft.com"
 else
     # === 手动模式 ===
@@ -100,31 +100,39 @@ else
     esac
 fi
 
-# 4. 生成密钥 (严格遵循 AI_RULES)
-echo -e "${YELLOW}正在生成高强度密钥 (ML-KEM-768)...${PLAIN}"
+# 4. 生成密钥 (严谨模式)
+echo -e "${YELLOW}正在生成密钥...${PLAIN}"
 
 UUID=$($XRAY_BIN uuid)
 SHORT_ID=$(openssl rand -hex 4)
 XHTTP_PATH="/$(openssl rand -hex 6)"
 
-# [Reality] 标准 X25519
+# [Reality] 标准 X25519 (采用 Vision 脚本的验证逻辑)
 RAW_REALITY=$($XRAY_BIN x25519)
-PRIVATE_KEY=$(echo "$RAW_REALITY" | awk '/Private/{print $3}')
-PUBLIC_KEY=$(echo "$RAW_REALITY" | awk '/Public/{print $3}')
+# 使用 tr -d ' \r\n' 强制清洗换行和空格，防止空变量
+PRIVATE_KEY=$(echo "$RAW_REALITY" | grep "Private" | awk -F ":" '{print $2}' | tr -d ' \r\n')
+PUBLIC_KEY=$(echo "$RAW_REALITY" | grep -E "Password|Public" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 
 # [VLESS ENC] ML-KEM-768 提取逻辑
-# 依据 AI_RULES: 先定位 ML-KEM 段落，再提取 key，避免混淆
 RAW_ENC=$($XRAY_BIN vlessenc)
-MLKEM_SECTION=$(echo "$RAW_ENC" | awk '/Authentication: ML-KEM-768/{flag=1; next} /Authentication:/{flag=0} flag')
-SERVER_DECRYPTION=$(echo "$MLKEM_SECTION" | grep '"decryption":' | sed 's/.*"decryption": "\([^"]*\)".*/\1/')
-CLIENT_ENCRYPTION=$(echo "$MLKEM_SECTION" | grep '"encryption":' | sed 's/.*"encryption": "\([^"]*\)".*/\1/')
+# 使用 awk -F '"' 提取 JSON 字段值，更精准
+SERVER_DECRYPTION=$(echo "$RAW_ENC" | grep '"decryption":' | head -n1 | awk -F '"' '{print $4}')
+CLIENT_ENCRYPTION=$(echo "$RAW_ENC" | grep '"encryption":' | head -n1 | awk -F '"' '{print $4}')
 
-if [[ -z "$SERVER_DECRYPTION" ]] || [[ -z "$CLIENT_ENCRYPTION" ]]; then
-    echo -e "${RED}错误: 密钥提取失败！${PLAIN}"
+# [关键熔断检查]
+if [[ -z "$PRIVATE_KEY" ]]; then
+    echo -e "${RED}错误: Reality 私钥提取失败！${PLAIN}"
+    echo -e "调试信息: $RAW_REALITY"
+    exit 1
+fi
+
+if [[ -z "$SERVER_DECRYPTION" ]]; then
+    echo -e "${RED}错误: ENC (ML-KEM) 密钥提取失败！${PLAIN}"
     echo -e "调试信息: $RAW_ENC"
     exit 1
 fi
 
+echo -e "Reality Key   : ${SKYBLUE}OK${PLAIN}"
 echo -e "VLESS Enc Key : ${SKYBLUE}ML-KEM-768 (OK)${PLAIN}"
 
 # 5. 注入节点配置
