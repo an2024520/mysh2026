@@ -276,10 +276,19 @@ show_menu() {
     while true; do
         clear
         local st="${RED}未配置${PLAIN}"
-        if [[ -f "$CONFIG_FILE" ]]; then
-            if jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v3.7 Ultimate)${PLAIN}"
-            fi
+        local has_cred=false
+        
+        # 检查是否有有效凭证文件（用于额外提示）
+        if [[ -f "$CRED_FILE" ]] && grep -q "WARP_PRIV_KEY" "$CRED_FILE" && grep -q "WARP_IPV6" "$CRED_FILE"; then
+            has_cred=true
+        fi
+        
+        # 核心判断：以 warp-out 是否存在为准
+        if [[ -f "$CONFIG_FILE" ]] && jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
+            st="${GREEN}已配置（WARP 运行中）${PLAIN}"
+        elif $has_cred; then
+            # 特殊情况：有凭证但没注入规则 → 提示用户可以快速部署
+            st="${YELLOW}凭证已保存（未启用 WARP）${PLAIN}"
         fi
 
         echo -e "================ Xray Native WARP 管理面板 ================"
