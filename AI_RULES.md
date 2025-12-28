@@ -34,8 +34,8 @@
     * **禁忌**: **严禁**使用 `warp-endpoint` 等非标准名称并将其关联到 `WARP` 出站（此操作会导致路由或握手失败）。
 
 ### 1.3 Rule-Set 迁移规范 (v1.12+ 强制)
-* ** geoip / geosite 已完全移除，必须使用 rule_set（remote 或 local）。**
-* ** 必须启用缓存**以避免重复下载：
+* **geoip / geosite** 已完全移除，必须使用 rule_set（remote 或 local）。
+* **必须启用**缓存以避免重复下载：
 	```json
 	"experimental": {
 	"cache_file": {
@@ -43,7 +43,7 @@
 	 }
 	}
 	```
-* ** 标准示例**（推荐使用 SagerNet 官方 rule-set）：
+* **标准示例**（推荐使用 SagerNet 官方 rule-set）：
 	```json
 	"route": {
 	  "rule_set": [
