@@ -21,7 +21,7 @@
 # ==============================================================================
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (v4.3 Ultimate - Final Polish)
+#  Sing-box Native WARP 管理模块 (v4.2 Ultimate - Final Polish)
 #  - 架构: Endpoint (v1.12+)
 #  - 核心: Systemd/Pkill 双模兼容 + 自动回滚保护
 #  - 策略: 2025 全面流媒体规则 (Netflix/Disney+/HBO/Paramount+/Spotify)
@@ -194,7 +194,7 @@ write_warp_config() {
             ] 
         }')
 
-    echo -e "${YELLOW}正在应用 v4.3 Endpoint 架构配置...${PLAIN}"
+    echo -e "${YELLOW}正在应用 v4.2 Endpoint 架构配置...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
@@ -232,6 +232,7 @@ register_warp() {
     
     local res_json=$(python3 -c "import base64, json; d=base64.b64decode('$client_id'); print(json.dumps([x for x in d[0:3]]))" 2>/dev/null)
     save_credentials "$priv_key" "$pub_key" "$v4" "$v6" "$res_json"
+    write_warp_config "$priv_key" "$pub_key" "$v4" "$v6" "$res_json"
 }
 
 manual_warp() {
@@ -263,6 +264,7 @@ manual_warp() {
     fi
 
     save_credentials "$priv_key" "$peer_pub" "$v4" "$v6" "$res_json"
+    write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$res_json"
 }
 
 # ==========================================
@@ -270,22 +272,13 @@ manual_warp() {
 # ==========================================
 
 ensure_warp_exists() {
-    # 如果 config 中已有 WARP Endpoint，直接返回成功
     if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-        return 0
+       return 0
     fi
-
-    # 如果没有 Endpoint，但有凭证文件 → 自动恢复
     if [[ -f "$CRED_FILE" ]]; then
-        source "$CRED_FILE" 2>/dev/null
-        if [[ -n "$PRIV_KEY" && -n "$V6_ADDR" ]]; then
-            echo -e "${YELLOW}检测到已有凭证，自动恢复 WARP Endpoint 配置...${PLAIN}"
-            write_warp_config "$PRIV_KEY" "$PUB_KEY" "$V4_ADDR" "$V6_ADDR" "$RESERVED"
-            return 0
-        fi
+        read -p "未发现配置但存在凭证，是否恢复？[y/n]: " r
+        [[ "$r" == "y" ]] && { source "$CRED_FILE"; write_warp_config "$PRIV_KEY" "$PUB_KEY" "$V4_ADDR" "$V6_ADDR" "$RESERVED"; return 0; }
     fi
-
-    echo -e "${RED}错误: 未找到 WARP 配置或有效凭证，请先配置凭证。${PLAIN}"
     return 1
 }
 
@@ -390,18 +383,10 @@ show_menu() {
     while true; do
         clear
         local st="${RED}未配置${PLAIN}"
-        local has_cred=false
-        
-        if [[ -f "$CRED_FILE" ]]; then
-            if grep -q "PRIV_KEY" "$CRED_FILE" && grep -q "V6_ADDR" "$CRED_FILE"; then
-                has_cred=true
+        if [[ -f "$CONFIG_FILE" ]]; then
+            if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
+                st="${GREEN}已配置 (v4.2 Ultimate)${PLAIN}"
             fi
-        fi
-        
-        if [[ -f "$CONFIG_FILE" ]] && jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-            st="${GREEN}已配置（WARP 运行中）${PLAIN}"
-        elif $has_cred; then
-            st="${YELLOW}凭证已保存（未启用 WARP）${PLAIN}"
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
         echo -e " 当前配置状态: [$st]"
@@ -428,7 +413,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.3)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.2)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
