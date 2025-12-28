@@ -295,21 +295,44 @@ jq --argjson targets "$tags_json" '
     restart_service
 }
 
-# --- 菜单（新增选项 3：手动配置 WARP）---
+# --- 菜单（新增三态状态显示 + 选项 3 手动配置 WARP）---
 check_env
-echo -e "============================================"
-echo -e " Sing-box 分流策略管理器 (v3.8 自包含版)"
-echo -e "--------------------------------------------"
-echo -e " 1. 添加分流策略 (支持多模式)"
-echo -e " 2. 卸载分流策略"
-echo -e " 3. 手动配置 WARP 凭证（首次必填）"
-echo -e " 0. 退出"
-echo -e "============================================"
-read -p "请选择: " choice
 
-case "$choice" in
-    1) get_target_nodes; apply_strategy ;;
-    2) uninstall_policy ;;
-    3) manual_warp_input; echo -e "${GREEN}配置完成，可现在选择 1 应用策略。${PLAIN}"; read -p "回车继续..." ;;
-    *) exit 0 ;;
-esac
+while true; do
+    clear
+    local st="${RED}未配置${PLAIN}"
+    local has_cred=false
+    
+    # 检查是否有有效凭证文件
+    if [[ -f "$CRED_FILE" ]]; then
+        if grep -q "PRIV_KEY" "$CRED_FILE" && grep -q "V6_ADDR" "$CRED_FILE"; then
+            has_cred=true
+        fi
+    fi
+    
+    # 核心判断：以 WARP Endpoint 是否存在为准
+    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
+        st="${GREEN}已配置（WARP 运行中）${PLAIN}"
+    elif $has_cred; then
+        st="${YELLOW}凭证已保存（未启用 WARP）${PLAIN}"
+    fi
+
+    echo -e "============================================"
+    echo -e " Sing-box 分流策略管理器 (v3.8 自包含版)"
+    echo -e "--------------------------------------------"
+    echo -e " 当前状态: [$st]"
+    echo -e " 1. 添加分流策略 (支持多模式)"
+    echo -e " 2. 卸载分流策略"
+    echo -e " 3. 手动配置 WARP 凭证（首次必填，后续回车跳过）"
+    echo -e " 0. 退出"
+    echo -e "============================================"
+    read -p "请选择: " choice
+
+    case "$choice" in
+        1) get_target_nodes; apply_strategy ;;
+        2) uninstall_policy ;;
+        3) manual_warp_input; echo -e "${GREEN}配置完成，可现在选择 1 应用策略。${PLAIN}"; read -p "回车继续..." ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}无效选项，请重新输入。${PLAIN}"; sleep 1 ;;
+    esac
+done
