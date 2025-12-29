@@ -306,7 +306,7 @@ while true; do
     local has_cred=false
     [[ -f "$CRED_FILE" ]] && grep -q "PRIV_KEY" "$CRED_FILE" && has_cred=true
 
-    if jq -e '.outbounds[] | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
+    if grep -q '"tag":.*"warp-out"' "$CONFIG_FILE"; then
         st="${GREEN}WARP 运行中${PLAIN}"
     elif $has_cred; then
         st="${YELLOW}凭证已存${PLAIN}"
@@ -314,7 +314,7 @@ while true; do
 
     # 动态提示状态
     local mode_hint=""
-    if jq -e '.outbounds[] | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
+    if grep -q '"tag":.*"warp-out"' "$CONFIG_FILE"; then
         if jq -e '.routing.rules[] | select(.ip == ["::/0"] and .outboundTag != "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
             mode_hint="当前模式: 原生IPv6直连 + IPv4 WARP兜底"
         else
