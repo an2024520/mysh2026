@@ -1,15 +1,14 @@
 #!/bin/bash
-echo "v5.1 核心原则：IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复"
+echo "v5.0 核心原则：IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）"
 sleep 2
 # ============================================================
-#  Xray IPv6 优先 + WARP 兜底补丁 (v5.1 Ultimate Final)
+#  Xray IPv6 优先 + WARP 兜底补丁 (v5.0 Ultimate Final)
 #  - 核心原则: 无论何种模式，强制触发 DNS 解析以优先匹配 IPv6
 #  - 模式1: Native IPv6 -> Direct | IPv4 -> WARP
 #  - 模式2: WARP IPv6   -> WARP   | WARP IPv4 -> WARP (强制 V6 优先)
 #  - 修复: 强制注入 domainStrategy: IPIfNonMatch
 #  - 修复: 靶向清洗逻辑 (Zero-Loss Policy)
 #  - 安全: 补全了卸载逻辑，闭环管理
-#  - 新增: ICMP9 优先级修复 (解决路由覆盖问题)
 # ============================================================
 
 RED='\033[0;31m'
@@ -273,32 +272,6 @@ uninstall_policy() {
     systemctl restart xray && echo -e "${GREEN}卸载完成。${PLAIN}" || { cp "$BACKUP_FILE" "$CONFIG_FILE"; echo -e "${RED}失败回滚${PLAIN}"; }
 }
 
-# ==================== ICMP9 修复补丁 ====================
-repair_icmp9_priority() {
-    echo -e "${YELLOW}正在修复 ICMP9 优先级冲突...${PLAIN}"
-    
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-         echo -e "${RED}未找到配置文件。${PLAIN}"; return 1
-    fi
-
-    cp "$CONFIG_FILE" "${CONFIG_FILE}.icmp9_fix.bak"
-    local tmp=$(mktemp)
-    
-    # 逻辑：将含有 "user" 字段的规则（ICMP9 特征）强制移动到路由规则列表顶部
-    # 原理：Xray 路由匹配是顺序执行，IPV6 补丁插入的 ::/0 规则会导致下方基于 user 的转发失效
-    if jq '
-        .routing.rules |= sort_by(if has("user") then 0 else 1 end)
-    ' "$CONFIG_FILE" > "$tmp"; then
-        mv "$tmp" "$CONFIG_FILE"
-        systemctl restart xray
-        echo -e "${GREEN}修复完成！ICMP9 规则已置顶。${PLAIN}"
-        echo -e "${SKYBLUE}建议重新测试中转连通性。${PLAIN}"
-    else
-        echo -e "${RED}JSON 处理失败，已回滚。${PLAIN}"
-        cp "${CONFIG_FILE}.icmp9_fix.bak" "$CONFIG_FILE"
-    fi
-}
-
 # ==================== 菜单 ====================
 while true; do
     clear
@@ -323,14 +296,13 @@ while true; do
     fi
 
     echo -e "============================================"
-    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.1 Ultimate Final)"
+    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.0 Ultimate Final)"
     echo -e " 当前状态: [$st]"
     [[ -n "$mode_hint" ]] && echo -e " $mode_hint"
     echo -e "--------------------------------------------"
     echo -e " 1. 应用分流策略 (Fix: 强制解析)"
     echo -e " 2. 卸载分流策略"
     echo -e " 3. 手动配置 WARP"
-    echo -e " 4. 修复 ICMP9 优先级 (解决中转失效)"
     echo -e " 0. 退出"
     echo -e "============================================"
     read -p "选: " c
@@ -338,7 +310,6 @@ while true; do
         1) inject_rule; read -p "..." ;;
         2) uninstall_policy; read -p "..." ;;
         3) manual_warp_input; read -p "..." ;;
-        4) repair_icmp9_priority; read -p "..." ;;
         0) exit 0 ;;
         *) echo -e "${RED}无效${PLAIN}"; sleep 1 ;;
     esac
