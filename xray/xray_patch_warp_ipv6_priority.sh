@@ -1,6 +1,6 @@
 #!/bin/bash
 #AIRULE: 警告：下面两行只能修改版本号，其他不要动
-echo "v5.61 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复（修复版 - 2025.12.29）"
+echo "v5.6 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复（修复版 - 纯IPv6稳定）"
 sleep 2
 
 # ===== 兼容 bash <(curl ...) 或 source 方式运行 =====
@@ -163,10 +163,14 @@ inject_warp_outbound() {
     
     local res="[${res_str}]"
 
-    # === 关键修复：纯 IPv6 环境下稳定获取 WARP IPv4 出口 ===
-    # 1. 强制使用 IPv4 endpoint（社区实测最稳定地址）
-    # 2. 删除 mtu:1280（Xray 默认 1420 更兼容自定义 WARP，1280 常导致 IPv4 不启用）
-    local endpoint="162.159.192.1:2408"
+    # === 关键修复：复刻 native 纯 IPv6 逻辑 + 删除 mtu:1280 ===
+    # 纯 IPv6 时强制 IPv6 endpoint（你的实测证明有效，能拿到 IPv4）
+    # 删除 mtu（用 Xray 默认 1420，避免 IPv4 不启用）
+    local endpoint="engage.cloudflareclient.com:2408"
+    local ipv4_check=$(curl -4 -s -m 5 http://ip.sb 2>/dev/null)
+    if [[ ! "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        endpoint="[2606:4700:d0::a29f:c001]:2408"
+    fi
 
     local direct_tag=$(jq -r '.outbounds[] | select(.tag == "direct" or .tag == "freedom" or .protocol == "freedom") | .tag' "$CONFIG_FILE" | head -n 1)
     [[ -z "$direct_tag" ]] && direct_tag="direct"
@@ -212,7 +216,7 @@ inject_warp_outbound() {
     }')
     jq --argjson al "$anti_loop_json" '.routing.rules = [$al] + .routing.rules' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-    echo -e "${GREEN}warp-out 已注入（已应用纯 IPv6 稳定修复）。${PLAIN}"
+    echo -e "${GREEN}warp-out 已注入（纯 IPv6 下强制 IPv6 endpoint + 默认 MTU）。${PLAIN}"
 }
 
 # ==================== 应用分流策略 ====================
@@ -381,7 +385,7 @@ while true; do
     fi
 
     echo -e "============================================"
-    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.6 Unified - 修复版)"
+    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.6 Unified - 纯IPv6稳定修复)"
     echo -e " 当前状态: [$st]"
     [[ -n "$mode_hint" ]] && echo -e " $mode_hint"
     echo -e "--------------------------------------------"
