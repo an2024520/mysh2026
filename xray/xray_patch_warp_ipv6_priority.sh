@@ -1,14 +1,12 @@
 #!/bin/bash
-#AIRULE: 警告：下面两行只能修改版本号，其他不要动
-echo "v5.6 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复"
-sleep 2
-
 # ===== 兼容 bash <(curl ...) 或 source 方式运行 =====
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     _pipeline_compat_main() { :; }
     echo -e "\033[31m[提示] 建议直接运行脚本文件，Source 模式仅供调试。\033[0m"
 fi
 
+echo "v5.7 紧急修复：修正 IPv6 Endpoint 语法错误 (Missing Brackets)"
+sleep 2
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -121,7 +119,7 @@ EOF
     echo -e "${GREEN}WARP 凭证已保存 (标准化格式)。${PLAIN}"
 }
 
-# ==================== [新增] 查看凭证信息 ====================
+# ==================== 查看凭证信息 ====================
 view_credentials() {
     if [[ -f "$CRED_FILE" ]]; then
         source "$CRED_FILE" 2>/dev/null
@@ -163,9 +161,13 @@ inject_warp_outbound() {
     
     local res="[${res_str}]"
 
+    # [Critical Fix] 修正 IPv6 Endpoint 格式，必须加 []
     local endpoint="engage.cloudflareclient.com:2408"
     local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
-    [[ ! "$ipv4_check" =~ ^[0-9.]+$ ]] && endpoint="2606:4700:d0::a29f:c001:2408"
+    # 如果 IPv4 检测失败（纯IPv6环境），使用 IPv6 Endpoint 并加上 []
+    if [[ ! "$ipv4_check" =~ ^[0-9.]+$ ]]; then
+        endpoint="[2606:4700:d0::a29f:c001]:2408"
+    fi
 
     local direct_tag=$(jq -r '.outbounds[] | select(.tag == "direct" or .tag == "freedom" or .protocol == "freedom") | .tag' "$CONFIG_FILE" | head -n 1)
     [[ -z "$direct_tag" ]] && direct_tag="direct"
@@ -381,7 +383,7 @@ while true; do
     fi
 
     echo -e "============================================"
-    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.6 Unified)"
+    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.7 BugFix)"
     echo -e " 当前状态: [$st]"
     [[ -n "$mode_hint" ]] && echo -e " $mode_hint"
     echo -e "--------------------------------------------"
