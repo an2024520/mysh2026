@@ -316,7 +316,7 @@ show_menu() {
                 if load_credentials; then
                     echo -e "PrivKey: $WG_KEY"
                     echo -e "IPv4: $WG_IPV4"
-                    echo -e "IPv6: $WG_ADDR"
+                    echo -e "IPv6: $WG_IPV6"
                     echo -e "Reserved: $WG_RESERVED"
                 else
                     echo -e "${RED}未找到凭证。${PLAIN}"
