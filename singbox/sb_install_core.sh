@@ -32,7 +32,7 @@ SERVICE_FILE="/etc/systemd/system/sing-box.service"
 # =================================================
 # 逻辑：在自动模式下，如果核心文件已存在，则跳过下载和重置
 if [[ "$AUTO_SETUP" == "true" ]] && [[ -f "$BIN_PATH" ]]; then
-    # 尝试获取版本号 (Sing-box version 输出通常是 "sing-box version 1.8.0 ...")
+    # 尝试获取版本号 (Sing-box version 输出通常是 "sing-box version 1.12.14 ...")
     CURRENT_VER=$($BIN_PATH version 2>/dev/null | head -n 1 | awk '{print $3}')
     echo -e "${GREEN}>>> [自动模式] 检测到 Sing-box (v${CURRENT_VER}) 已安装，跳过核心部署。${PLAIN}"
     
