@@ -1,4 +1,6 @@
 #!/bin/bash
+echo "v7.7"
+sleep 3
 # ============================================================
 #  Commander Auto-Deploy (v7.7 Combo Update)
 #  - 特性: 严格 IP 检测 | 纯净 URL (适配 Worker)
@@ -302,6 +304,22 @@ deploy_icmp9_combo() {
     echo -e "${SKYBLUE}==============================================${PLAIN}"
     echo -e "${SKYBLUE}   [Combo] ICMP9 全家桶 (Tunnel+Warp+Node)   ${PLAIN}"
     echo -e "${SKYBLUE}==============================================${PLAIN}"
+
+# === [新增] 步骤 0: 代理查漏补缺 (防止开头没输导致 IPv6 下载失败) ===
+    if [[ -z "$GH_PROXY_URL" ]]; then
+        echo -e "${YELLOW}提示: 检测到您在启动时未配置代理，纯 IPv6 环境建议配置以防下载失败。${PLAIN}"
+        read -p "是否现在补充代理? (y/n, 默认 n): " ask_proxy
+        if [[ "$ask_proxy" == "y" ]]; then
+            read -p "请输入代理 (如 https://gh.my-worker.dev/): " input_proxy_combo
+            if [[ -n "$input_proxy_combo" ]]; then
+                [[ "$input_proxy_combo" != */ ]] && input_proxy_combo="${input_proxy_combo}/"
+                export GH_PROXY_URL="$input_proxy_combo"
+                echo -e "${GREEN}>>> 代理已补录: ${GH_PROXY_URL}${PLAIN}"
+            fi
+        fi
+        echo -e "----------------------------------------------"
+    fi
+
     
     # 1. Argo Tunnel 信息
     echo -e "${YELLOW}--- 步骤 1/4: Tunnel 配置 ---${PLAIN}"
