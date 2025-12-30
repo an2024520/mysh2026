@@ -297,6 +297,7 @@ configure_ssh_security() {
 }
 
 # --- 8. 虚拟内存管理 (Swap) ---
+# --- 8. 虚拟内存管理 (Swap) ---
 manage_swap() {
     # OpenVZ 检测
     if [[ -d "/proc/vz" ]]; then
@@ -323,17 +324,32 @@ manage_swap() {
                 read -p "请输入 Swap 数值 (MB) [建议 512]: " swapsize
                 [[ -z "$swapsize" ]] && swapsize=512
                 
-                # 检查是否已存在
+                # 检查是否已存在 (防止双重挂载)
                 if grep -q "swap" /etc/fstab; then
                     echo -e "${RED}错误: 检测到 fstab 中已存在 Swap 配置。${PLAIN}"
                     echo -e "${YELLOW}建议先执行 [2. 删除 Swap] 清理环境。${PLAIN}"
                 else
                     echo -e "${YELLOW}正在创建 ${swapsize}MB Swap 文件...${PLAIN}"
-                    dd if=/dev/zero of=/swapfile bs=1M count=${swapsize}
+                    
+                    # [核心优化] 优先使用 fallocate (秒级创建，防止 128M 机器断连)
+                    if command -v fallocate &> /dev/null; then
+                        echo -e "${SKYBLUE}正在使用 fallocate 高速分配...${PLAIN}"
+                        fallocate -l ${swapsize}M /swapfile 2>/dev/null
+                    fi
+
+                    # [兼容保底] 如果 fallocate 失败(文件系统不支持)，回退到 dd (使用小块读写)
+                    if [ ! -f /swapfile ] || [ $(stat -c%s /swapfile) -eq 0 ]; then
+                        echo -e "${SKYBLUE}fallocate 不可用，回退到 dd (平滑模式)...${PLAIN}"
+                        # bs=64k 降低内存抖动，count 计算总块数
+                        dd if=/dev/zero of=/swapfile bs=64k count=$((swapsize * 16))
+                    fi
+
+                    # 设置权限并挂载
                     chmod 600 /swapfile
                     mkswap /swapfile
                     swapon /swapfile
                     echo '/swapfile none swap defaults 0 0' >> /etc/fstab
+                    
                     echo -e "${GREEN}✅ Swap 创建成功！${PLAIN}"
                     echo -e "--------------------------------------"
                     cat /proc/swaps
@@ -342,15 +358,20 @@ manage_swap() {
                 read -p "按回车继续..." ;;
             2)
                 echo -e "\n${YELLOW}>>> 删除 Swap 向导${PLAIN}"
-                if grep -q "swap" /etc/fstab; then
-                    echo -e "${YELLOW}正在停止并删除 Swap...${PLAIN}"
+                # [逻辑增强] 只要 free 里有显示，或者有文件，就强制执行清理
+                if [ $(free | grep -i swap | awk '{print $2}') -gt 0 ] || [ -f /swapfile ]; then
+                    echo -e "${YELLOW}正在强制停止并删除所有 Swap 空间...${PLAIN}"
+                    # 从 fstab 中彻底移除相关行
                     sed -i '/swap/d' /etc/fstab
+                    # 释放缓存
                     echo "3" > /proc/sys/vm/drop_caches
-                    swapoff -a
+                    # 关闭所有交换分区 (stderr 丢弃，防止无 swap 时报错)
+                    swapoff -a 2>/dev/null
+                    # 删除物理文件
                     rm -f /swapfile
-                    echo -e "${GREEN}✅ Swap 已删除。${PLAIN}"
+                    echo -e "${GREEN}✅ Swap 已强制删除。${PLAIN}"
                 else
-                    echo -e "${RED}未检测到 Swap 配置 (fstab 中无记录)。${PLAIN}"
+                    echo -e "${RED}系统当前未激活任何 Swap 空间，无需清理。${PLAIN}"
                 fi
                 read -p "按回车继续..." ;;
             0) break ;;
