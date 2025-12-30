@@ -299,9 +299,20 @@ configure_ssh_security() {
 # --- 8. 虚拟内存管理 (Swap) ---
 # --- 8. 虚拟内存管理 (Swap) ---
 manage_swap() {
-    # OpenVZ 检测
+    # 1. OpenVZ 检测
     if [[ -d "/proc/vz" ]]; then
         echo -e "${RED}错误: 您的 VPS 基于 OpenVZ 架构，不支持修改 Swap！${PLAIN}"
+        read -p "按回车返回..."
+        return
+    fi
+
+    # 2. 容器环境检测 (Podman/Docker/LXC)
+    # 检测 systemd-detect-virt 的输出是否包含 docker, podman, lxc 等关键字
+    local virt_type=$(systemd-detect-virt 2>/dev/null)
+    if [[ "$virt_type" == "docker" || "$virt_type" == "podman" || "$virt_type" == "lxc" || "$virt_type" == "wsl" ]]; then
+        echo -e "${RED}警告: 检测到您正在容器环境 ($virt_type) 中运行。${PLAIN}"
+        echo -e "${YELLOW}在此环境下，Swap 由宿主机严格管控，容器内无法添加或删除。${PLAIN}"
+        echo -e "${YELLOW}您当前的 Swap 是虚拟配额，无法修改。${PLAIN}"
         read -p "按回车返回..."
         return
     fi
