@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Universal Subscription Manager (通用订阅管理器) v3.5
-#  - 策略: 双轨制 (OpenClash 增强 / v2rayN 兼容)
-#  - 变更: 允许用户自定义 Token 以匹配 Cloudflare 网页端设置
+#  Universal Subscription Manager (通用订阅管理器) v3.7
+#  - 修复: Python 服务增加 IPv6 自动降级支持 (解决 IPv6 Only 启动崩溃问题)
+#  - 修复: 强制补全 net-tools 依赖
+#  - 核心: Token 持久化 + 端口暴力清理 + 优先读配置
 # ============================================================
 
 RED='\033[0;31m'
@@ -17,11 +18,14 @@ PLAIN='\033[0m'
 # ============================================================
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 用户运行此脚本！${PLAIN}" && exit 1
 
-if ! command -v python3 &> /dev/null; then
-    echo -e "${YELLOW}>>> 正在安装 Python3...${PLAIN}"
-    apt-get update && apt-get install -y python3
-fi
+# [修复] 检查并安装必要依赖
+echo -e "${YELLOW}>>> 正在检查系统依赖...${PLAIN}"
+if ! command -v python3 &> /dev/null; then apt-get update && apt-get install -y python3; fi
 if ! command -v curl &> /dev/null; then apt-get install -y curl; fi
+if ! command -v netstat &> /dev/null; then 
+    echo -e "${YELLOW}安装 net-tools (用于端口检测)...${PLAIN}"
+    apt-get install -y net-tools
+fi
 
 # --- 通用默认配置 ---
 SCAN_PATHS=("/root" "/usr/local/etc")
@@ -30,10 +34,43 @@ TUNNEL_CFG="/etc/cloudflared/config.yml"
 LOCAL_PORT=8080
 CONFIG_FILE="/root/.sub_manager_config" 
 
+# 优先读取配置文件中的 TOKEN
 if [[ -f "$CONFIG_FILE" ]]; then source "$CONFIG_FILE"; fi
 
+# 辅助函数: 保存配置到文件
+save_config() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then touch "$CONFIG_FILE"; fi
+    
+    if grep -q "SUB_TOKEN=" "$CONFIG_FILE"; then
+        sed -i "s|^SUB_TOKEN=.*|SUB_TOKEN=\"$SUB_TOKEN\"|" "$CONFIG_FILE"
+    else
+        echo "SUB_TOKEN=\"$SUB_TOKEN\"" >> "$CONFIG_FILE"
+    fi
+
+    if [[ -n "$ARGO_DOMAIN" ]]; then
+        if grep -q "ARGO_DOMAIN=" "$CONFIG_FILE"; then
+            sed -i "s|^ARGO_DOMAIN=.*|ARGO_DOMAIN=\"$ARGO_DOMAIN\"|" "$CONFIG_FILE"
+        else
+            echo "ARGO_DOMAIN=\"$ARGO_DOMAIN\"" >> "$CONFIG_FILE"
+        fi
+    fi
+
+    if [[ -n "$SAVED_WORKER_URL" ]]; then
+        if grep -q "SAVED_WORKER_URL=" "$CONFIG_FILE"; then
+            sed -i "s|^SAVED_WORKER_URL=.*|SAVED_WORKER_URL=\"$SAVED_WORKER_URL\"|" "$CONFIG_FILE"
+        else
+            echo "SAVED_WORKER_URL=\"$SAVED_WORKER_URL\"" >> "$CONFIG_FILE"
+        fi
+        if grep -q "SAVED_WORKER_SECRET=" "$CONFIG_FILE"; then
+            sed -i "s|^SAVED_WORKER_SECRET=.*|SAVED_WORKER_SECRET=\"$SAVED_WORKER_SECRET\"|" "$CONFIG_FILE"
+        else
+            echo "SAVED_WORKER_SECRET=\"$SAVED_WORKER_SECRET\"" >> "$CONFIG_FILE"
+        fi
+    fi
+}
+
 # ============================================================
-# 1. Python 核心: 全协议解析引擎 (v3.4 双轨版)
+# 1. Python 核心: 全协议解析引擎
 # ============================================================
 generate_converter_py() {
     cat > /tmp/sub_converter.py <<'EOF'
@@ -123,7 +160,6 @@ class ProxyConverter:
                 "skip-cert-verify": True,
                 "obfs": params.get("obfs", ""),
                 "obfs-password": params.get("obfs-password", ""),
-                # 策略: 恢复采集指纹，默认 chrome。Worker 会负责在发给 v2rayN 时隐藏它。
                 "fingerprint": params.get("fp", "chrome"),
                 "udp": True
             }
@@ -161,8 +197,6 @@ def generate_clash_local(nodes):
         if 'uuid' in n: yaml += f"    uuid: {n['uuid']}\n"
         if 'password' in n: yaml += f"    password: {n['password']}\n"
         if n.get('tls'): yaml += "    tls: true\n"
-        
-        # 本地生成也保留指纹，供参考
         if n.get('client-fingerprint'): yaml += f"    client-fingerprint: {n['client-fingerprint']}\n"
         if n.get('fingerprint'): yaml += f"    fingerprint: {n['fingerprint']}\n"
     
@@ -226,13 +260,14 @@ EOF
 }
 
 # ============================================================
-# 2. Python Server & 3. 功能函数
+# 2. Python Server (IPv6 增强版) & 3. 功能函数
 # ============================================================
 generate_server_py() {
     cat > /usr/local/bin/sub_server.py <<EOF
 import http.server
 import socketserver
 import os
+import socket
 
 PORT = $LOCAL_PORT
 TOKEN = "$SUB_TOKEN"
@@ -296,10 +331,25 @@ p {{ font-size: 12px; color: #666; margin-bottom: 0; }}
         self.end_headers()
         self.wfile.write(html.encode('utf-8'))
 
+# [修复] 适配 IPv6 的服务器类
+class DualStackServer(socketserver.TCPServer):
+    address_family = socket.AF_INET6
+    allow_reuse_address = True
+
 os.chdir(BASE_DIR)
-socketserver.TCPServer.allow_reuse_address = True
-with socketserver.TCPServer(("", PORT), AutoHandler) as httpd:
-    httpd.serve_forever()
+
+# [修复] 启动逻辑: 优先尝试 IPv4, 失败(如 IPv6 Only)则切换到 IPv6
+try:
+    with socketserver.TCPServer(("", PORT), AutoHandler) as httpd:
+        httpd.serve_forever()
+except OSError:
+    try:
+        # IPv6 Fallback
+        with DualStackServer(("", PORT), AutoHandler) as httpd:
+            httpd.serve_forever()
+    except Exception as e:
+        print(f"CRITICAL ERROR: Server failed to start: {e}")
+        exit(1)
 EOF
 }
 
@@ -325,7 +375,6 @@ scan_and_select() {
 }
 
 process_subs() {
-    # --- 修改点: 交互式 Token 输入 ---
     if [[ -z "$SUB_TOKEN" ]]; then
         echo -e "\n${YELLOW}>>> Token 配置 (配合 Cloudflare Tunnel 网页端路径)${PLAIN}"
         read -p "请输入自定义 Token (留空则随机生成): " input_token
@@ -337,7 +386,8 @@ process_subs() {
             echo -e "生成随机 Token: ${GREEN}$SUB_TOKEN${PLAIN}"
         fi
     fi
-    # --------------------------------
+    
+    save_config
     
     local target_dir="${BASE_DIR}/${SUB_TOKEN}"
     mkdir -p "$target_dir"
@@ -354,18 +404,16 @@ push_worker() {
     if [[ -z "$SAVED_WORKER_URL" ]]; then
         read -p "请输入 Worker URL (不带 /sub): " SAVED_WORKER_URL
         read -p "请输入 Worker Secret: " SAVED_WORKER_SECRET
-        echo "SAVED_WORKER_URL=\"$SAVED_WORKER_URL\"" > "$CONFIG_FILE"
-        echo "SAVED_WORKER_SECRET=\"$SAVED_WORKER_SECRET\"" >> "$CONFIG_FILE"
     else
         echo -e "使用已保存 Worker: ${SKYBLUE}$SAVED_WORKER_URL${PLAIN}"
         read -p "是否修改配置? [y/N]: " change
         if [[ "$change" == "y" ]]; then
              read -p "新 Worker URL: " SAVED_WORKER_URL
              read -p "新 Secret: " SAVED_WORKER_SECRET
-             echo "SAVED_WORKER_URL=\"$SAVED_WORKER_URL\"" > "$CONFIG_FILE"
-             echo "SAVED_WORKER_SECRET=\"$SAVED_WORKER_SECRET\"" >> "$CONFIG_FILE"
         fi
     fi
+    save_config
+    
     echo -e "${YELLOW}>>> 正在推送到云端...${PLAIN}"
     status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${SAVED_WORKER_URL}/update" \
         -H "Content-Type: application/json" -H "Authorization: ${SAVED_WORKER_SECRET}" -d @"$payload_file")
@@ -373,63 +421,55 @@ push_worker() {
 }
 
 start_local_web() {
-    # 1. 确保有 Argo 域名
-    if [[ -z "$ARGO_DOMAIN" ]]; then read -p "请输入 Argo 域名: " ARGO_DOMAIN; fi
+    if [[ -z "$ARGO_DOMAIN" ]]; then 
+        read -p "请输入 Argo 域名: " ARGO_DOMAIN
+        save_config
+    fi
+    
+    echo -e "${YELLOW}>>> 正在准备服务环境...${PLAIN}"
+    pkill -f "sub_server.py" >/dev/null 2>&1
+    
+    # 端口清理
+    if command -v fuser &>/dev/null; then
+        fuser -k -n tcp "$LOCAL_PORT" >/dev/null 2>&1
+    else
+        pid=$(netstat -tulpn 2>/dev/null | grep ":$LOCAL_PORT " | grep "python" | awk '{print $7}' | cut -d'/' -f1)
+        if [[ -n "$pid" ]]; then kill -9 "$pid"; fi
+    fi
+    sleep 1
 
-    # 2. 尝试更新 Tunnel 配置 (仅当文件存在时)
     if [[ -f "$TUNNEL_CFG" ]]; then
-        # 只有当配置里找不到当前 Token 时才写入，避免重复
         if ! grep -q "path: /$SUB_TOKEN" "$TUNNEL_CFG"; then
-            echo -e "${YELLOW}>>> 正在更新 Tunnel 路由规则...${PLAIN}"
-            # 这里的逻辑是: 在 ingress: 下面插入新规则
             sed -i "/^ingress:/a \\  - hostname: $ARGO_DOMAIN\\n    path: /$SUB_TOKEN\\n    service: http://localhost:$LOCAL_PORT" "$TUNNEL_CFG"
-            # 重启 Tunnel 使配置生效
             systemctl restart cloudflared >/dev/null 2>&1
             echo -e "${GREEN}>>> (本地配置模式) Tunnel 规则已更新。${PLAIN}"
         fi
     fi
-
-    # 3. 生成最新的 Python 服务脚本 (确保写入了当前的 SUB_TOKEN)
-    generate_server_py
-
-    # 4. [核心修复] 暴力清理端口，防止旧进程残留
-    echo -e "${YELLOW}>>> 正在清理旧服务进程...${PLAIN}"
-    # 方式A: 按文件名杀
-    pkill -f "sub_server.py" >/dev/null 2>&1
-    # 方式B: 按端口杀 (更彻底，防止僵尸进程)
-    # 如果没有 fuser 命令，尝试用 lsof 或 netstat 配合 kill
-    if command -v fuser &>/dev/null; then
-        fuser -k -n tcp "$LOCAL_PORT" >/dev/null 2>&1
-    else
-        # 低配环境通用方案: 杀掉所有监听 8080 的 python 进程
-        pid=$(netstat -tulpn 2>/dev/null | grep ":$LOCAL_PORT " | grep "python" | awk '{print $7}' | cut -d'/' -f1)
-        if [[ -n "$pid" ]]; then kill -9 "$pid"; fi
-    fi
     
-    # 等待端口释放
-    sleep 2
-
-    # 5. 启动新服务
+    generate_server_py
+    
     read -p "开启时长(分钟, 默认60): " min
     min=${min:-60}
     
     echo -e "${YELLOW}>>> 正在启动新服务 (Token: $SUB_TOKEN)...${PLAIN}"
+    # 移除 >/dev/null 来让用户在必要时看到崩溃信息 (但为了后台运行仍保留 &)
     (timeout "${min}m" python3 /usr/local/bin/sub_server.py >/dev/null 2>&1 &)
     
-    # 6. 验证启动结果
     sleep 2
+    # 检测逻辑：只要端口有 Python 监听就算成功 (IPv4 或 IPv6)
     if netstat -tulpn 2>/dev/null | grep -q ":$LOCAL_PORT "; then
         echo -e "${GREEN}>>> 服务启动成功！${PLAIN}"
         echo -e "访问地址: ${SKYBLUE}https://${ARGO_DOMAIN}/${SUB_TOKEN}${PLAIN}"
     else
-        echo -e "${RED}>>> 错误: 服务启动失败！端口 $LOCAL_PORT 可能仍被占用或脚本出错。${PLAIN}"
-        echo -e "建议尝试运行: killall python3 然后重试。"
+        echo -e "${RED}>>> 错误: 服务启动失败！${PLAIN}"
+        echo -e "${YELLOW}>>> 请运行以下命令手动查看报错信息:${PLAIN}"
+        echo -e "python3 /usr/local/bin/sub_server.py"
     fi
 }
 
 menu() {
     clear
-    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Smart v3.5)${PLAIN}"
+    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Smart v3.7)${PLAIN}"
     echo -e "--------------------------------"
     echo -e "当前文件: ${SKYBLUE}${SELECTED_FILE:-未选择}${PLAIN}"
     echo -e "当前Token: ${YELLOW}${SUB_TOKEN:-未设置}${PLAIN}"
@@ -455,8 +495,4 @@ menu() {
     read -p "按回车继续..."
     menu
 }
-if [[ -f "/usr/local/bin/sub_server.py" ]]; then
-    SUB_TOKEN=$(grep '^TOKEN =' "/usr/local/bin/sub_server.py" | cut -d'"' -f2)
-    ARGO_DOMAIN=$(grep '^ARGO_DOMAIN =' "/usr/local/bin/sub_server.py" | cut -d'"' -f2)
-fi
 menu
