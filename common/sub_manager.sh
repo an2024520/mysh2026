@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Universal Subscription Manager (通用订阅管理器) v3.8
-#  - 变更: 默认端口改为 8088 (避开拥挤的 8080)
-#  - 新增: 启动 Web 服务时支持自定义端口
-#  - 修复: 依赖检查与 IPv6 兼容性保持最新
+#  Universal Subscription Manager (通用订阅管理器) v3.9
+#  - 恢复: Web 页面增加 "Clash" 和 "v2ray" 手动下载按钮
+#  - 增强: Python 后端增加显式文件路由 (/token/clash.yaml)
+#  - 保持: 端口自定义、Token 持久化、IPv6 兼容
 # ============================================================
 
 RED='\033[0;31m'
@@ -27,7 +27,6 @@ if ! command -v netstat &> /dev/null; then apt-get install -y net-tools; fi
 SCAN_PATHS=("/root" "/usr/local/etc")
 BASE_DIR="/root/sub_store"              
 TUNNEL_CFG="/etc/cloudflared/config.yml"
-# [变更] 默认端口改为 8088
 LOCAL_PORT=8088
 CONFIG_FILE="/root/.sub_manager_config" 
 
@@ -38,21 +37,18 @@ if [[ -f "$CONFIG_FILE" ]]; then source "$CONFIG_FILE"; fi
 save_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then touch "$CONFIG_FILE"; fi
     
-    # 保存 Token
     if grep -q "SUB_TOKEN=" "$CONFIG_FILE"; then
         sed -i "s|^SUB_TOKEN=.*|SUB_TOKEN=\"$SUB_TOKEN\"|" "$CONFIG_FILE"
     else
         echo "SUB_TOKEN=\"$SUB_TOKEN\"" >> "$CONFIG_FILE"
     fi
 
-    # 保存端口 (新增)
     if grep -q "LOCAL_PORT=" "$CONFIG_FILE"; then
         sed -i "s|^LOCAL_PORT=.*|LOCAL_PORT=$LOCAL_PORT|" "$CONFIG_FILE"
     else
         echo "LOCAL_PORT=$LOCAL_PORT" >> "$CONFIG_FILE"
     fi
     
-    # 保存域名
     if [[ -n "$ARGO_DOMAIN" ]]; then
         if grep -q "ARGO_DOMAIN=" "$CONFIG_FILE"; then
             sed -i "s|^ARGO_DOMAIN=.*|ARGO_DOMAIN=\"$ARGO_DOMAIN\"|" "$CONFIG_FILE"
@@ -247,7 +243,7 @@ EOF
 }
 
 # ============================================================
-# 2. Python Server & 3. 功能函数
+# 2. Python Server (Web 增强版) & 3. 功能函数
 # ============================================================
 generate_server_py() {
     cat > /usr/local/bin/sub_server.py <<EOF
@@ -263,18 +259,33 @@ ARGO_DOMAIN = "$ARGO_DOMAIN"
 
 class AutoHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path.strip('/') == TOKEN:
-            self.send_response(200)
+        # 清理路径
+        clean_path = self.path.strip('/')
+        
+        # 1. 根路径 (智能分发页面)
+        if clean_path == TOKEN:
             ua = self.headers.get('User-Agent', '').lower()
+            # 浏览器 -> 显示带按钮的HTML
+            if "mozilla" in ua and "go-http" not in ua and "clash" not in ua:
+                self.serve_html()
+                return
+            # Clash 客户端 -> 直接给 yaml
             if "clash" in ua:
                 self.serve_file("clash.yaml", "text/yaml; charset=utf-8")
                 return
-            if "mozilla" in ua and "go-http" not in ua:
-                self.serve_html()
-                return
+            # 默认 -> 给 v2ray 文本
             self.serve_file("v2ray.txt", "text/plain; charset=utf-8")
             return
-        super().do_GET()
+
+        # 2. [新增] 显式文件下载路由
+        if clean_path == f"{TOKEN}/clash.yaml":
+             self.serve_file("clash.yaml", "text/yaml; charset=utf-8")
+             return
+        if clean_path == f"{TOKEN}/v2ray.txt":
+             self.serve_file("v2ray.txt", "text/plain; charset=utf-8")
+             return
+
+        self.send_error(404, "Not Found")
 
     def serve_file(self, filename, content_type):
         file_path = os.path.join(BASE_DIR, TOKEN, filename)
@@ -289,6 +300,7 @@ class AutoHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404, "File not found")
 
     def serve_html(self):
+        # [新增] 包含手动下载按钮的界面
         html = f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -298,17 +310,29 @@ class AutoHandler(http.server.SimpleHTTPRequestHandler):
 <title>本地订阅服务</title>
 <style>
 body {{ background: #111; color: #eee; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}
-.card {{ background: #222; padding: 20px; border-radius: 12px; width: 320px; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }}
+.card {{ background: #222; padding: 30px; border-radius: 12px; width: 340px; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }}
 h3 {{ color: #38bdf8; margin-top: 0; }}
 .url {{ word-break: break-all; font-family: monospace; font-size: 12px; color: #aaa; margin: 15px 0; background: #333; padding: 10px; border-radius: 5px; border: 1px dashed #555; }}
-p {{ font-size: 12px; color: #666; margin-bottom: 0; }}
+.btn {{ display: block; width: 100%; padding: 10px 0; margin: 10px 0; background: #333; color: #fff; text-decoration: none; border-radius: 6px; border: 1px solid #444; transition: 0.2s; }}
+.btn:hover {{ background: #444; border-color: #666; }}
+.btn-clash {{ border-left: 4px solid #f97316; }}
+.btn-v2ray {{ border-left: 4px solid #8b5cf6; }}
+p {{ font-size: 12px; color: #666; margin-top: 15px; }}
 </style>
 </head>
 <body>
 <div class="card">
-    <h3>📂 临时订阅分发</h3>
+    <h3>📂 订阅分发中心</h3>
+    
+    <p style="text-align:left; color:#888; margin-bottom:5px;">通用订阅地址 (支持自动识别):</p>
     <div class="url">https://{ARGO_DOMAIN}/{TOKEN}</div>
-    <p>支持自动识别 Clash / v2rayN 客户端</p>
+    
+    <div style="margin-top: 20px;">
+        <a href="/{TOKEN}/clash.yaml" class="btn btn-clash">📥 下载 Clash 配置 (.yaml)</a>
+        <a href="/{TOKEN}/v2ray.txt" class="btn btn-v2ray">📥 下载 v2ray/v2rayN (.txt)</a>
+    </div>
+
+    <p>💡 提示: iOS Shadowrocket 请直接复制通用地址</p>
 </div>
 </body>
 </html>
@@ -392,7 +416,6 @@ push_worker() {
 start_local_web() {
     if [[ -z "$ARGO_DOMAIN" ]]; then read -p "请输入 Argo 域名: " ARGO_DOMAIN; fi
     
-    # [新增] 交互式端口修改
     echo -e "\n${YELLOW}>>> 端口配置${PLAIN}"
     read -p "请输入本地监听端口 [默认 $LOCAL_PORT]: " user_port
     if [[ -n "$user_port" ]]; then LOCAL_PORT="$user_port"; fi
@@ -415,12 +438,6 @@ start_local_web() {
     if netstat -tulpn 2>/dev/null | grep -q ":$LOCAL_PORT "; then
         echo -e "${GREEN}========================================${PLAIN}"
         echo -e "${GREEN}   ✅ 服务启动成功！${PLAIN}"
-        echo -e "${GREEN}========================================${PLAIN}"
-        echo -e "${YELLOW}⚠️  重要：请务必修改 Cloudflare 后台配置！${PLAIN}"
-        echo -e "   1. 进入 Networks -> Tunnels -> Configure -> Public Hostname"
-        echo -e "   2. 修改 Service URL 为: ${SKYBLUE}127.0.0.1:$LOCAL_PORT${PLAIN}"
-        echo -e "   3. 确保 Path 匹配: ${SKYBLUE}$SUB_TOKEN${PLAIN}"
-        echo -e "${GREEN}========================================${PLAIN}"
         echo -e "测试访问: https://${ARGO_DOMAIN}/${SUB_TOKEN}"
     else
         echo -e "${RED}>>> 错误: 服务启动失败！${PLAIN}"
@@ -430,7 +447,7 @@ start_local_web() {
 
 menu() {
     clear
-    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Smart v3.8)${PLAIN}"
+    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Smart v3.9)${PLAIN}"
     echo -e "--------------------------------"
     echo -e "当前文件: ${SKYBLUE}${SELECTED_FILE:-未选择}${PLAIN}"
     echo -e "当前Token: ${YELLOW}${SUB_TOKEN:-未设置}${PLAIN}"
@@ -439,7 +456,7 @@ menu() {
     echo -e "  1. 扫描并选择节点文件"
     echo -e "  2. 执行转换"
     echo -e "  3. 推送 Worker"
-    echo -e "  4. ${SKYBLUE}本地 Web 分享 (可换端口)${PLAIN}"
+    echo -e "  4. ${SKYBLUE}本地 Web 分享 (带手动下载)${PLAIN}"
     echo -e "  5. 修改 Token"
     echo -e "  0. 退出"
     echo -e "--------------------------------"
