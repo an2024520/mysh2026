@@ -13,6 +13,20 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
+
+# ============================================================
+# 0. 预检 (Pre-flight Check)
+# ============================================================
+[[ $EUID -ne 0 ]] && echo -e "\033[0;31m错误: 必须使用 root 用户运行此脚本！\033[0m" && exit 1
+
+if ! command -v python3 &> /dev/null; then
+    echo -e "\033[0;33m正在安装 Python3...\033[0m"
+    apt-get update && apt-get install -y python3
+fi
+
+if ! command -v curl &> /dev/null; then apt-get install -y curl; fi
+
+
 # 默认扫描路径
 SCAN_PATHS=("/root" "/usr/local/etc")
 # 默认配置目录
