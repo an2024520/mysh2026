@@ -8,7 +8,7 @@ import re
 
 # ================= 配置区域 =================
 # ⚠️ 只填 Worker 根域名，不要带 /sub
-WORKER_URL = "https://plain-sea-2f0a.aaa5461.workers.dev" 
+WORKER_URL = "https://域名" 
 API_SECRET = "ReplaceWithYourSecurePassword" 
 SOURCE_FILE = "links.txt"
 # ===========================================

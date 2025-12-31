@@ -1,1 +1,1 @@
-将V2rayn分享链接转换为openclash格式
+vless://ac2dsfd0-ac45-411b-8334-a20453fb06e2@31.56.113.145:49861?encryption=none&security=reality&sni=www.hun.fi&fp=firefox&pbk=d-LG_ns3Nrh5GeWnEMpn2zbzD2TT8f8KhKnHU8z9XxE&sid=58d89cd76d58&spx=%2F&type=grpc&authority=&serviceName=dfw&mode=multi#%E8%8A%AC%E5%85%B02-%E5%80%8D%E7%8E%872.2%E5%80%8D

@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Universal Subscription Manager (通用订阅管理器) v3.4
+#  Universal Subscription Manager (通用订阅管理器) v3.5
 #  - 策略: 双轨制 (OpenClash 增强 / v2rayN 兼容)
-#  - 变更: Hy2 恢复指纹采集 (默认 chrome)，交由 Worker 智能分发
+#  - 变更: 允许用户自定义 Token 以匹配 Cloudflare 网页端设置
 # ============================================================
 
 RED='\033[0;31m'
@@ -226,7 +226,7 @@ EOF
 }
 
 # ============================================================
-# 2. Python Server & 3. 功能函数 (保持不变)
+# 2. Python Server & 3. 功能函数
 # ============================================================
 generate_server_py() {
     cat > /usr/local/bin/sub_server.py <<EOF
@@ -325,10 +325,20 @@ scan_and_select() {
 }
 
 process_subs() {
+    # --- 修改点: 交互式 Token 输入 ---
     if [[ -z "$SUB_TOKEN" ]]; then
-        SUB_TOKEN=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 12 | head -n 1)
-        echo -e "生成随机 Token: ${GREEN}$SUB_TOKEN${PLAIN}"
+        echo -e "\n${YELLOW}>>> Token 配置 (配合 Cloudflare Tunnel 网页端路径)${PLAIN}"
+        read -p "请输入自定义 Token (留空则随机生成): " input_token
+        if [[ -n "$input_token" ]]; then
+            SUB_TOKEN="$input_token"
+            echo -e "使用自定义 Token: ${GREEN}$SUB_TOKEN${PLAIN}"
+        else
+            SUB_TOKEN=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 12 | head -n 1)
+            echo -e "生成随机 Token: ${GREEN}$SUB_TOKEN${PLAIN}"
+        fi
     fi
+    # --------------------------------
+    
     local target_dir="${BASE_DIR}/${SUB_TOKEN}"
     mkdir -p "$target_dir"
     echo -e "${YELLOW}>>> 正在解析节点并生成配置...${PLAIN}"
@@ -364,11 +374,12 @@ push_worker() {
 
 start_local_web() {
     if [[ -z "$ARGO_DOMAIN" ]]; then read -p "请输入 Argo 域名: " ARGO_DOMAIN; fi
+    # 兼容性尝试: 只有在文件存在时才修改，否则静默跳过（适应 Token 模式）
     if [[ -f "$TUNNEL_CFG" ]]; then
         if ! grep -q "path: /$SUB_TOKEN" "$TUNNEL_CFG"; then
             sed -i "/^ingress:/a \\  - hostname: $ARGO_DOMAIN\\n    path: /$SUB_TOKEN\\n    service: http://localhost:$LOCAL_PORT" "$TUNNEL_CFG"
-            systemctl restart cloudflared
-            echo -e "${GREEN}>>> Tunnel 规则已更新。${PLAIN}"
+            systemctl restart cloudflared >/dev/null 2>&1
+            echo -e "${GREEN}>>> (本地配置模式) Tunnel 规则已更新。${PLAIN}"
         fi
     fi
     generate_server_py
@@ -381,17 +392,17 @@ start_local_web() {
 
 menu() {
     clear
-    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Smart v3.4)${PLAIN}"
+    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Smart v3.5)${PLAIN}"
     echo -e "--------------------------------"
     echo -e "当前文件: ${SKYBLUE}${SELECTED_FILE:-未选择}${PLAIN}"
-    echo -e "当前Token: ${YELLOW}${SUB_TOKEN:-未生成}${PLAIN}"
+    echo -e "当前Token: ${YELLOW}${SUB_TOKEN:-未设置}${PLAIN}"
     echo -e "云端配置: ${SAVED_WORKER_URL:-未设置}"
     echo -e "--------------------------------"
     echo -e "  1. 扫描并选择节点文件"
-    echo -e "  2. 执行转换"
+    echo -e "  2. 执行转换 (生成/使用固定 Token)"
     echo -e "  3. ${GREEN}方案 A${PLAIN}: 推送 Worker (双轨分发)"
     echo -e "  4. ${SKYBLUE}方案 B${PLAIN}: 本地 Web 分享"
-    echo -e "  5. 重置 Token"
+    echo -e "  5. 修改/重置 Token"
     echo -e "  0. 退出"
     echo -e "--------------------------------"
     read -p "请选择: " opt
