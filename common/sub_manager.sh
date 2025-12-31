@@ -373,21 +373,58 @@ push_worker() {
 }
 
 start_local_web() {
+    # 1. 确保有 Argo 域名
     if [[ -z "$ARGO_DOMAIN" ]]; then read -p "请输入 Argo 域名: " ARGO_DOMAIN; fi
-    # 兼容性尝试: 只有在文件存在时才修改，否则静默跳过（适应 Token 模式）
+
+    # 2. 尝试更新 Tunnel 配置 (仅当文件存在时)
     if [[ -f "$TUNNEL_CFG" ]]; then
+        # 只有当配置里找不到当前 Token 时才写入，避免重复
         if ! grep -q "path: /$SUB_TOKEN" "$TUNNEL_CFG"; then
+            echo -e "${YELLOW}>>> 正在更新 Tunnel 路由规则...${PLAIN}"
+            # 这里的逻辑是: 在 ingress: 下面插入新规则
             sed -i "/^ingress:/a \\  - hostname: $ARGO_DOMAIN\\n    path: /$SUB_TOKEN\\n    service: http://localhost:$LOCAL_PORT" "$TUNNEL_CFG"
+            # 重启 Tunnel 使配置生效
             systemctl restart cloudflared >/dev/null 2>&1
             echo -e "${GREEN}>>> (本地配置模式) Tunnel 规则已更新。${PLAIN}"
         fi
     fi
+
+    # 3. 生成最新的 Python 服务脚本 (确保写入了当前的 SUB_TOKEN)
     generate_server_py
+
+    # 4. [核心修复] 暴力清理端口，防止旧进程残留
+    echo -e "${YELLOW}>>> 正在清理旧服务进程...${PLAIN}"
+    # 方式A: 按文件名杀
+    pkill -f "sub_server.py" >/dev/null 2>&1
+    # 方式B: 按端口杀 (更彻底，防止僵尸进程)
+    # 如果没有 fuser 命令，尝试用 lsof 或 netstat 配合 kill
+    if command -v fuser &>/dev/null; then
+        fuser -k -n tcp "$LOCAL_PORT" >/dev/null 2>&1
+    else
+        # 低配环境通用方案: 杀掉所有监听 8080 的 python 进程
+        pid=$(netstat -tulpn 2>/dev/null | grep ":$LOCAL_PORT " | grep "python" | awk '{print $7}' | cut -d'/' -f1)
+        if [[ -n "$pid" ]]; then kill -9 "$pid"; fi
+    fi
+    
+    # 等待端口释放
+    sleep 2
+
+    # 5. 启动新服务
     read -p "开启时长(分钟, 默认60): " min
     min=${min:-60}
-    pkill -f "sub_server.py"
+    
+    echo -e "${YELLOW}>>> 正在启动新服务 (Token: $SUB_TOKEN)...${PLAIN}"
     (timeout "${min}m" python3 /usr/local/bin/sub_server.py >/dev/null 2>&1 &)
-    echo -e "${GREEN}>>> 服务已启动！访问: https://${ARGO_DOMAIN}/${SUB_TOKEN}${PLAIN}"
+    
+    # 6. 验证启动结果
+    sleep 2
+    if netstat -tulpn 2>/dev/null | grep -q ":$LOCAL_PORT "; then
+        echo -e "${GREEN}>>> 服务启动成功！${PLAIN}"
+        echo -e "访问地址: ${SKYBLUE}https://${ARGO_DOMAIN}/${SUB_TOKEN}${PLAIN}"
+    else
+        echo -e "${RED}>>> 错误: 服务启动失败！端口 $LOCAL_PORT 可能仍被占用或脚本出错。${PLAIN}"
+        echo -e "建议尝试运行: killall python3 然后重试。"
+    fi
 }
 
 menu() {
