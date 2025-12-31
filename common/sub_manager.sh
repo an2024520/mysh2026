@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Universal Subscription Manager (通用订阅管理器) v3.0
-#  - 核心: 全协议解析引擎 (VMess/VLESS/Hy2/Trojan)
+#  Universal Subscription Manager (通用订阅管理器) v3.1
+#  - 核心: 全协议解析引擎 (智能清洗版)
+#  - 升级: 自动识别并剥离 "Link: ", "Tag:" 等非链接文本
 #  - 功能: 扫描 -> 转换 -> Web UI (本地) / Worker (云端)
-#  - 特性: 去品牌化、自动记忆配置、智能分流
 # ============================================================
 
 RED='\033[0;31m'
@@ -26,10 +26,10 @@ if ! command -v curl &> /dev/null; then apt-get install -y curl; fi
 
 # --- 通用默认配置 ---
 SCAN_PATHS=("/root" "/usr/local/etc")
-BASE_DIR="/root/sub_store"              # 改为通用的存储目录
+BASE_DIR="/root/sub_store"              
 TUNNEL_CFG="/etc/cloudflared/config.yml"
 LOCAL_PORT=8080
-CONFIG_FILE="/root/.sub_manager_config" # 改为通用的配置文件
+CONFIG_FILE="/root/.sub_manager_config" 
 
 # 加载保存的配置
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -37,7 +37,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 # ============================================================
-# 1. Python 核心: 全协议解析引擎 (嵌入式)
+# 1. Python 核心: 全协议解析引擎 (嵌入式 - 智能清洗版)
 # ============================================================
 generate_converter_py() {
     cat > /tmp/sub_converter.py <<'EOF'
@@ -172,17 +172,34 @@ def main():
     nodes = []
     raw_links = []
     
+    protocols = ["vmess://", "vless://", "hysteria2://", "hy2://", "trojan://", "ss://"]
+
     with open(infile, 'r', encoding='utf-8') as f:
         for line in f:
-            link = line.strip()
-            if not link or link.startswith("#"): continue
-            raw_links.append(link)
+            line = line.strip()
+            if not line or line.startswith("#"): continue
+            
+            # === 智能提取逻辑 ===
+            # 扫描该行是否包含协议头，如果包含，只截取协议头及其后面的内容
+            # 这能自动过滤掉 "Tag:", "Link:", "Time:" 等前缀
+            clean_link = None
+            for p in protocols:
+                idx = line.find(p)
+                if idx != -1:
+                    clean_link = line[idx:].strip()
+                    break
+            
+            # 如果这一行里根本没有协议头，说明是纯元数据(Tag/Time)，直接跳过
+            if not clean_link:
+                continue
+
+            raw_links.append(clean_link)
             
             node = None
-            if link.startswith("vmess://"): node = ProxyConverter.parse_vmess(link)
-            elif link.startswith("vless://"): node = ProxyConverter.parse_vless(link)
-            elif link.startswith("hysteria2://") or link.startswith("hy2://"): node = ProxyConverter.parse_hy2(link)
-            elif link.startswith("trojan://"): node = ProxyConverter.parse_trojan(link)
+            if clean_link.startswith("vmess://"): node = ProxyConverter.parse_vmess(clean_link)
+            elif clean_link.startswith("vless://"): node = ProxyConverter.parse_vless(clean_link)
+            elif clean_link.startswith("hysteria2://") or clean_link.startswith("hy2://"): node = ProxyConverter.parse_hy2(clean_link)
+            elif clean_link.startswith("trojan://"): node = ProxyConverter.parse_trojan(clean_link)
             
             if node: nodes.append(node)
 
@@ -406,7 +423,7 @@ start_local_web() {
 # ============================================================
 menu() {
     clear
-    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Generic v3.0)${PLAIN}"
+    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Smart v3.1)${PLAIN}"
     echo -e "--------------------------------"
     echo -e "当前文件: ${SKYBLUE}${SELECTED_FILE:-未选择}${PLAIN}"
     echo -e "当前Token: ${YELLOW}${SUB_TOKEN:-未生成}${PLAIN}"
