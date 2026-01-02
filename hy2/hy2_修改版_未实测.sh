@@ -1,14 +1,16 @@
 #!/bin/bash
 
 # ============================================================
-#  Hysteria 2 全能管理脚本 (v4.2 修复版 - 2025.12.27)
+#  Hysteria 2 全能管理脚本 (v4.3 修复版 - 2026.01.02)
 #  修复要点：
 #  1. listen 字段 YAML 语法错误（移除错误的 "-" 前缀）
 #  2. IPv6-only 环境 IP 获取失败（智能获取公网 IP，支持 IPv4/IPv6）
 #  3. Web 服务恢复逻辑优化（443 端口冲突时不再强行恢复）
 #  4. masquerade 支持低内存模式（静态文件/404，避免 proxy OOM）
 #  5. ACME 模式非 443 端口时自动添加 httpListen: :80
-#  6. 其他细节完善与健壮性提升
+#  6. 修复分享链接 IPv6 格式错误（增加 []）
+#  7. 修复 YAML 追加写入风险（强制换行）
+#  8. 防火墙组件改为按需安装（端口跳跃交互）
 # ============================================================
 
 # 颜色定义
@@ -170,7 +172,13 @@ print_node_info() {
     fi
 
     local NODE_NAME="Hy2-${SHOW_ADDR}"
-    local V2RAYN_LINK="hysteria2://${PASSWORD}@${SHOW_ADDR}:${SHOW_PORT}/?sni=${SNI}&insecure=${INSECURE}#${NODE_NAME}"
+    
+    # [新增] 修复 IPv6 链接格式 (若包含 : 则添加 [])
+    local SHARE_ADDR="${SHOW_ADDR}"
+    if [[ "$SHOW_ADDR" =~ : ]]; then
+        SHARE_ADDR="[${SHOW_ADDR}]"
+    fi
+    local V2RAYN_LINK="hysteria2://${PASSWORD}@${SHARE_ADDR}:${SHOW_PORT}/?sni=${SNI}&insecure=${INSECURE}#${NODE_NAME}"
 
     echo -e "\n${GREEN}==============================================${PLAIN}"
     echo -e "${GREEN}      Hysteria 2 配置信息 (${IS_SOCKS5})      ${PLAIN}"
@@ -224,8 +232,19 @@ install_base() {
     echo -e "${YELLOW}正在更新系统并安装基础组件...${PLAIN}"
     $PKG_UPDATE
     $PKG_INSTALL curl wget openssl jq socat ca-certificates
-    if [[ "$PKG_MANAGER" == "apt" ]]; then
-        $PKG_INSTALL iptables-persistent netfilter-persistent || true
+    
+    # [新增] 交互式询问是否安装防火墙组件 (支持端口跳跃)
+    read -p "是否计划使用端口跳跃功能 (需安装防火墙组件)? (y/n, 默认n): " INSTALL_FW
+    if [[ "$INSTALL_FW" == "y" ]]; then
+        echo -e "${YELLOW}正在安装防火墙组件...${PLAIN}"
+        # 尝试安装基础 iptables (部分精简系统可能缺失)
+        $PKG_INSTALL iptables || true
+        
+        if [[ "$PKG_MANAGER" == "apt" ]]; then
+            $PKG_INSTALL iptables-persistent netfilter-persistent || true
+        fi
+    else
+        echo -e "${YELLOW}跳过防火墙组件安装${PLAIN}"
     fi
 }
 
@@ -445,6 +464,10 @@ EOF
     openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt -days 3650 -subj "/CN=$SNI" >/dev/null 2>&1
 
     write_common_config "$LISTEN" "$PASSWORD" "$MASQ_TYPE" "$MASQ_CONTENT"
+    
+    # [新增] 修复 YAML 追加写入风险
+    [[ -n "$(tail -c1 "$CONFIG_FILE")" ]] && echo "" >> "$CONFIG_FILE"
+
     cat <<EOF >> "$CONFIG_FILE"
 tls:
   cert: /etc/hysteria/server.crt
@@ -522,6 +545,10 @@ EOF
     stop_web_service
 
     write_common_config "$LISTEN" "$PASSWORD" "$MASQ_TYPE" "$MASQ_CONTENT"
+    
+    # [新增] 修复 YAML 追加写入风险
+    [[ -n "$(tail -c1 "$CONFIG_FILE")" ]] && echo "" >> "$CONFIG_FILE"
+
     cat <<EOF >> "$CONFIG_FILE"
 acme:
   domains:
@@ -530,6 +557,8 @@ acme:
 EOF
 
     if [[ "$LISTEN_PORT" != "443" ]]; then
+        # [新增] 修复 YAML 追加写入风险
+        [[ -n "$(tail -c1 "$CONFIG_FILE")" ]] && echo "" >> "$CONFIG_FILE"
         echo "  httpListen: :80" >> "$CONFIG_FILE"
     fi
 
@@ -567,6 +596,9 @@ attach_socks5() {
         read -p "请输入 Socks5 地址 (默认 $DEFAULT_SOCKS): " PROXY_ADDR
         [[ -z "$PROXY_ADDR" ]] && PROXY_ADDR="$DEFAULT_SOCKS"
     fi
+
+    # [新增] 修复 YAML 追加写入风险
+    [[ -n "$(tail -c1 "$CONFIG_FILE")" ]] && echo "" >> "$CONFIG_FILE"
 
     cat <<EOF >> "$CONFIG_FILE"
 
@@ -667,7 +699,7 @@ while true; do
     check_root
     clear
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}    Hysteria 2 一键管理脚本 (v4.2)      ${PLAIN}"
+    echo -e "${GREEN}    Hysteria 2 一键管理脚本 (v4.3)      ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "  1. 安装 - ${YELLOW}自签名证书${PLAIN} (无域名)"
     echo -e "  2. 安装 - ${GREEN}ACME 证书${PLAIN} (有域名)"
