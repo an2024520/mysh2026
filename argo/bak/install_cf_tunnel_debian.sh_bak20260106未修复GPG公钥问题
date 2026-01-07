@@ -1,10 +1,13 @@
 #!/bin/bash
 
 # ============================================================
-#  Cloudflare Tunnel 安装助手 (v5.8 Logic Fix - 2025.01.07)
-#  - 修复: 增加 GPG 依赖补全 (gnupg/curl)
-#  - 优化: 增加 APT 源清理与智能回退机制
-#  - 保持: 原有环境自检与 DNS 修复逻辑不变
+#  Cloudflare Tunnel 安装助手 (v5.6 终极优化版 - 2025.12.28)
+#  - 自适应模式：ARGO_AUTH 存在 → 自动安装；否则 → 手动菜单
+#  - 环境自检仅在安装时执行
+#  - 统一安装路径 /usr/local/bin
+#  - DNS 修复智能适配 IPv4/IPv6
+#  - 只支持官方最新架构 (amd64/arm64)
+#  - 卸载彻底 + 可选 DNS 恢复
 # ============================================================
 
 RED='\033[0;31m'
@@ -69,58 +72,29 @@ install_software() {
 
     echo -e "${GREEN}>>> 开始安装 Cloudflared (统一安装到 /usr/local/bin)...${PLAIN}"
     
-    local apt_success="false"
-
     # 优先 APT（Debian/Ubuntu）
     if command -v apt-get &> /dev/null; then
-        echo -e "${YELLOW}检测到 Debian 系统，准备配置环境...${PLAIN}"
-        
-        # [Step 1] 清理潜在的坏源，防止 apt update 报错 (解开死锁)
-        rm -f /etc/apt/sources.list.d/cloudflared.list
-        
-        # [Step 2] 补全系统依赖 (GPG 工具)
-        echo -e "正在补全 GPG 依赖..."
-        apt-get update -y
-        apt-get install -y gnupg curl ca-certificates
-
-        # [Step 3] 尝试导入 Key 并智能判断
+        echo -e "${YELLOW}检测到 Debian 系统，使用 APT 官方源...${PLAIN}"
         mkdir -p --mode=0755 /usr/share/keyrings
-        # 使用 && 逻辑确保只有 Key 下载成功才继续
-        if curl -fsSL --retry 3 https://pkg.cloudflare.com/cloudflare-public-v2.gpg | gpg --dearmor --yes -o /usr/share/keyrings/cloudflare-public-v2.gpg; then
-            echo -e "${GREEN}GPG Key 导入成功，添加官方源...${PLAIN}"
-            echo 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' | tee /etc/apt/sources.list.d/cloudflared.list > /dev/null
-            
-            if apt-get update && apt-get install -y cloudflared; then
-                # 移动到统一路径
-                mv /usr/bin/cloudflared /usr/local/bin/cloudflared 2>/dev/null || true
-                apt_success="true"
-            else
-                echo -e "${RED}APT 安装过程失败，清理源文件...${PLAIN}"
-                rm -f /etc/apt/sources.list.d/cloudflared.list
-            fi
-        else
-            echo -e "${RED}无法连接 Cloudflare GPG 地址，跳过 APT 模式...${PLAIN}"
-            # 确保不残留坏文件
-            rm -f /etc/apt/sources.list.d/cloudflared.list
-        fi
+        curl -fsSL --retry 3 https://pkg.cloudflare.com/cloudflare-public-v2.gpg | gpg --dearmor --yes -o /usr/share/keyrings/cloudflare-public-v2.gpg
+        echo 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' | tee /etc/apt/sources.list.d/cloudflared.list
+        apt-get update
+        apt-get install -y cloudflared
+        # 移动到统一路径
+        mv /usr/bin/cloudflared /usr/local/bin/cloudflared 2>/dev/null || true
     fi
 
-    # 二进制兜底安装 (APT 失败或非 Debian 系统时执行)
-    if [[ "$apt_success" != "true" ]] || ! command -v /usr/local/bin/cloudflared &> /dev/null; then
-        echo -e "${YELLOW}正在使用官方二进制直接安装...${PLAIN}"
+    # 如果仍未安装成功，使用二进制
+    if ! command -v /usr/local/bin/cloudflared &> /dev/null; then
+        echo -e "${YELLOW}使用官方最新二进制安装...${PLAIN}"
         ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
         case $ARCH in
             amd64|x86_64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
             arm64|aarch64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
             *) echo -e "${RED}不支持的架构: $ARCH (仅支持 amd64/arm64)${PLAIN}"; exit 1 ;;
         esac
-        
-        if wget -O /usr/local/bin/cloudflared "$CF_URL"; then
-            chmod +x /usr/local/bin/cloudflared
-        else
-            echo -e "${RED}二进制文件下载失败！请检查网络。${PLAIN}"
-            exit 1
-        fi
+        wget -O /usr/local/bin/cloudflared "$CF_URL"
+        chmod +x /usr/local/bin/cloudflared
     fi
 
     echo -e "${GREEN}cloudflared 版本: $($(readlink -f /usr/local/bin/cloudflared) --version)${PLAIN}"
@@ -138,14 +112,12 @@ uninstall_tunnel() {
     rm -f /etc/systemd/system/cloudflared.service
     rm -rf /etc/cloudflared
     rm -f /usr/local/bin/cloudflared
-    
-    # [新增] 彻底清理 APT 源文件
     rm -f /etc/apt/sources.list.d/cloudflared.list
-    
     apt-get remove --purge cloudflared -y 2>/dev/null || true
     apt-get autoremove -y 2>/dev/null || true
     systemctl daemon-reload
     
+    # 可选恢复 DNS
     if [[ -f /etc/resolv.conf.bak ]]; then
         mv /etc/resolv.conf.bak /etc/resolv.conf
         echo -e "${GREEN}已恢复原 DNS 配置${PLAIN}"
@@ -205,7 +177,7 @@ EOF
     if systemctl is-active --quiet cloudflared; then
         echo -e "${GREEN}========================================${PLAIN}"
         echo -e "${GREEN}    Cloudflare Tunnel 启动成功！        ${PLAIN}"
-        [[ "$IS_IPV6_ONLY" == "true" ]] && echo -e "${SKYBLUE}    [IPv6 + HTTP2 优化已启用]           ${PLAIN}\"
+        [[ "$IS_IPV6_ONLY" == "true" ]] && echo -e "${SKYBLUE}    [IPv6 + HTTP2 优化已启用]           ${PLAIN}"
         echo -e "${GREEN}========================================${PLAIN}"
         echo -e "${YELLOW}验证命令：${PLAIN}"
         echo "  journalctl -u cloudflared -f"
@@ -224,8 +196,8 @@ if [[ -n "$ARGO_AUTH" ]]; then
     install_software
     configure_tunnel
 else
-    # 手动模式
-    echo -e "${GREEN}=== Cloudflare Tunnel 管理助手 (Fixed) ===${PLAIN}"
+    # 手动模式（menu.sh 或直接运行）
+    echo -e "${GREEN}=== Cloudflare Tunnel 管理助手 ===${PLAIN}"
     echo "1. 安装/更新 Tunnel"
     echo "2. 卸载 Tunnel"
     echo "0. 退出"
