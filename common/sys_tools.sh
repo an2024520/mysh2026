@@ -2,7 +2,7 @@
 
 # ============================================================
 #  模块五：系统运维工具箱 (System Tools)
-#  - 状态: v2.6 (集成 Swap 管理 + SSH 端口修改)
+#  - 状态: v2.7 (集成 Swap 管理 + SSH 端口修改 + 中文修复)
 #  - 适用: Xray / Sing-box / Hysteria2 / Cloudflare Tunnel
 #  - 更新: 自动清除 sshd_config.d 中的覆盖配置
 # ============================================================
@@ -342,7 +342,6 @@ configure_ssh_security() {
 }
 
 # --- 8. 虚拟内存管理 (Swap) ---
-# --- 8. 虚拟内存管理 (Swap) ---
 manage_swap() {
     # 1. OpenVZ 检测
     if [[ -d "/proc/vz" ]]; then
@@ -436,6 +435,32 @@ manage_swap() {
     done
 }
 
+# --- 9. 修复中文显示 (UTF-8) ---
+fix_zh_encoding() {
+    echo -e "${YELLOW}正在修复中文显示乱码 (配置 zh_CN.UTF-8)...${PLAIN}"
+    
+    # 检测包管理器
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -y && apt-get install -y locales
+    else
+        echo -e "${RED}当前仅支持 Debian/Ubuntu 系统自动修复。${PLAIN}"
+        read -p "按回车返回..."
+        return
+    fi
+
+    # 修改配置
+    [ -f /etc/locale.gen ] && sed -i 's/^# *zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
+    [ -f /etc/locale.gen ] && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+
+    # 生成与应用
+    locale-gen
+    update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+    echo -e "${GREEN}✅ 修复完成。${PLAIN}"
+    echo -e "若仍乱码，请检查 SSH 客户端是否设置为 UTF-8 编码。"
+    read -p "按回车继续..."
+}
+
 # ==========================================
 # 主菜单
 # ==========================================
@@ -454,6 +479,7 @@ show_menu() {
         echo -e " ${GREEN}6.${PLAIN} UDP 端口跳跃管理 ${YELLOW}(适配 Sing-box Hy2)${PLAIN}"
         echo -e " ${GREEN}7.${PLAIN} SSH 安全配置 ${YELLOW}(导入公钥/禁用密码/改端口)${PLAIN}"
         echo -e " ${GREEN}8.${PLAIN} 虚拟内存管理 (Swap) ${YELLOW}(小鸡必备)${PLAIN}"
+        echo -e " ${GREEN}9.${PLAIN} 修复中文显示乱码 ${YELLOW}(Debian/Ubuntu)${PLAIN}"
         echo -e " --------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo ""
@@ -467,6 +493,7 @@ show_menu() {
             6) manage_port_hopping ;;
             7) configure_ssh_security ;;
             8) manage_swap ;;
+            9) fix_zh_encoding ;;
             0) exit 0 ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
