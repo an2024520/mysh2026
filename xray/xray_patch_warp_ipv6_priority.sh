@@ -70,29 +70,30 @@ smart_parse_reserved() {
     fi
 }
 
-# ==================== WARP 凭证 (标准化统一版) ====================
+# ==================== WARP 凭证 (手动录入) ====================
 manual_warp_input() {
     local def_key="" def_v4="" def_v6="" def_res=""
     
     if [[ -f "$CRED_FILE" ]]; then
         source "$CRED_FILE" 2>/dev/null
-        # [Unified] 只读取标准变量名
-        def_key="$WARP_PRIV_KEY"
-        def_v4="$WARP_IPV4"
-        def_v6="$WARP_IPV6"
-        def_res="$WARP_RESERVED"
+        # 尝试兼容旧变量名
+        [[ -n "$WARP_KEY" ]] && def_key="$WARP_KEY"
+        [[ -n "$WARP_PRIV_KEY" ]] && def_key="$WARP_PRIV_KEY"
+        
+        [[ -n "$WARP_IPV4" ]] && def_v4="$WARP_IPV4"
+        [[ -n "$WARP_IPV6" ]] && def_v6="$WARP_IPV6"
+        [[ -n "$WARP_RESERVED" ]] && def_res="$WARP_RESERVED"
     fi
 
-    echo -e "${SKYBLUE}=== WARP 配置 (Standardized) ===${PLAIN}"
+    echo -e "${SKYBLUE}=== WARP 配置 ===${PLAIN}"
     echo -e "${YELLOW}提示：Reserved 支持 Base64 ClientID 或 数字格式${PLAIN}"
     
     local show_key=""
     [[ -n "$def_key" ]] && show_key="${def_key:0:6}..."
 
-    # [Incremental Patch] Auto-Setup Injection
     if [[ "$AUTO_SETUP" == "true" ]]; then
          echo -e "${GREEN}>>> [自动模式] 读取 WARP 凭证...${PLAIN}"
-         priv_key="${WARP_PRIV_KEY}"
+         priv_key="${WARP_PRIV_KEY:-$WARP_KEY}"
          v4="${WARP_IPV4:-172.16.0.2/32}"
          v6="${WARP_IPV6}"
          res_input="${WARP_RESERVED:-0,0,0}"
@@ -116,30 +117,29 @@ manual_warp_input() {
     local clean_res=$(smart_parse_reserved "$res_input")
     echo -e "✅ Reserved 解析结果: [${clean_res}]"
     
-    # 基础清洗
     v4=$(echo "$v4" | tr -d ' "''')
     v6=$(echo "$v6" | tr -d ' "''')
     priv_key=$(echo "$priv_key" | tr -d ' "''')
 
     mkdir -p "$(dirname "$CRED_FILE")"
     
-    # [Unified] 只保存标准 WARP_ 变量
     cat > "$CRED_FILE" <<EOF
 WARP_PRIV_KEY="$priv_key"
 WARP_IPV4="$v4"
 WARP_IPV6="$v6"
 WARP_RESERVED="$clean_res"
 EOF
-    echo -e "${GREEN}WARP 凭证已保存 (标准化格式)。${PLAIN}"
+    echo -e "${GREEN}WARP 凭证已保存。${PLAIN}"
 }
 
 # ==================== 查看凭证信息 ====================
 view_credentials() {
     if [[ -f "$CRED_FILE" ]]; then
         source "$CRED_FILE" 2>/dev/null
-        if [[ -n "$WARP_PRIV_KEY" ]]; then
+        local k="${WARP_PRIV_KEY:-$WARP_KEY}"
+        if [[ -n "$k" ]]; then
             echo -e "${SKYBLUE}=== 当前 WARP 凭证信息 ===${PLAIN}"
-            echo -e "PrivKey : ${YELLOW}${WARP_PRIV_KEY}${PLAIN}"
+            echo -e "PrivKey : ${YELLOW}${k}${PLAIN}"
             echo -e "IPv4    : ${YELLOW}${WARP_IPV4}${PLAIN}"
             echo -e "IPv6    : ${YELLOW}${WARP_IPV6}${PLAIN}"
             echo -e "Reserved: ${YELLOW}${WARP_RESERVED}${PLAIN}"
@@ -157,15 +157,13 @@ view_credentials() {
 inject_warp_outbound() {
     source "$CRED_FILE" 2>/dev/null
     
-    # [Unified] 只读取标准变量
-    local key="$WARP_PRIV_KEY"
+    local key="${WARP_PRIV_KEY:-$WARP_KEY}"
     local v4="$WARP_IPV4"
     local v6="$WARP_IPV6"
     local res_str="$WARP_RESERVED"
 
     [[ -z "$key" ]] && echo -e "${RED}错误: 凭证无效 (Key为空)，请重新配置。${PLAIN}" && return 1
 
-    # 标准化 CIDR
     [[ ! "$v4" =~ "/" && -n "$v4" ]] && v4="${v4}/32"
     [[ ! "$v6" =~ "/" ]] && v6="${v6}/128"
 
@@ -175,10 +173,8 @@ inject_warp_outbound() {
     
     local res="[${res_str}]"
 
-    # [Critical Fix] 修正 IPv6 Endpoint 格式，必须加 []
     local endpoint="engage.cloudflareclient.com:2408"
     local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
-    # 如果 IPv4 检测失败（纯IPv6环境），使用 IPv6 Endpoint 并加上 []
     if [[ ! "$ipv4_check" =~ ^[0-9.]+$ ]]; then
         endpoint="[2606:4700:d0::a29f:c001]:2408"
     fi
@@ -186,7 +182,6 @@ inject_warp_outbound() {
     local direct_tag=$(jq -r '.outbounds[] | select(.tag == "direct" or .tag == "freedom" or .protocol == "freedom") | .tag' "$CONFIG_FILE" | head -n 1)
     [[ -z "$direct_tag" ]] && direct_tag="direct"
 
-    # [Unified] 与 Native 脚本保持一致，恢复 MTU 1280
     local warp_json=$(jq -n \
         --arg key "$key" \
         --argjson addr "$addr" \
@@ -234,7 +229,6 @@ inject_warp_outbound() {
 
 # ==================== 应用分流策略 ====================
 inject_rule() {
-    # 检查 warp-out 是否存在
     if ! jq -e '.outbounds[] | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
         if [[ -f "$CRED_FILE" ]]; then inject_warp_outbound
         else manual_warp_input && inject_warp_outbound; fi
@@ -244,7 +238,6 @@ inject_rule() {
     echo -e " 1. 原生IPv6直连 + IPv4 WARP兜底"
     echo -e " 2. 双栈走WARP (强制IPv6优先解析)"
     
-    # [Incremental Patch] Auto Mode Selection
     if [[ "$AUTO_SETUP" == "true" ]]; then
         mode_select=${WARP_MODE_SELECT:-1}
         echo -e "${GREEN}>>> [自动模式] 已选模式: $mode_select${PLAIN}"
@@ -263,7 +256,6 @@ inject_rule() {
     local node_list=$(jq -r '.inbounds[] | select(.protocol != "dokodemo-door" and .tag != "api") | "\(.tag) | \(.protocol)"' "$CONFIG_FILE" | nl)
     echo "$node_list"
     
-    # [Incremental Patch] Auto Target Selection
     local tags_list=()
     if [[ "$AUTO_SETUP" == "true" ]] && [[ -n "$TARGET_TAG" ]]; then
          echo -e "${GREEN}>>> [自动模式] 锁定目标节点: $TARGET_TAG${PLAIN}"
@@ -363,10 +355,13 @@ uninstall_policy() {
 # ==================== ICMP9 修复补丁 (Priority Fix) ====================
 repair_icmp9_priority() {
     local silent_mode="$1"
+    
+    # [Fix] 仅在非静默模式下输出提示
     [[ "$silent_mode" != "silent" ]] && echo -e "${YELLOW}正在执行智能路由重排序 (User > Domain > IP)...${PLAIN}"
     
     if [[ ! -f "$CONFIG_FILE" ]]; then
-         echo -e "${RED}未找到配置文件。${PLAIN}"; return 1
+         [[ "$silent_mode" != "silent" ]] && echo -e "${RED}未找到配置文件。${PLAIN}"
+         return 1
     fi
 
     cp "$CONFIG_FILE" "${CONFIG_FILE}.icmp9_fix.bak"
@@ -375,30 +370,30 @@ repair_icmp9_priority() {
     # 优先级 1: 含有 "user" 字段的规则 (ICMP9/Relay 用户规则) -> 置顶
     # 优先级 2: 含有 "domain" 字段的规则 (Anti-Loop/DNS 等) -> 中间
     # 优先级 3: 其他规则 (通常是 IP 兜底规则，如 WARP ::/0) -> 底部
+    # [Fix] 使用括号明确 not 的作用域，修复 "Cannot check whether boolean has a string key"
     if jq '
         .routing.rules = (
             (.routing.rules | map(select(has("user")))) + 
-            (.routing.rules | map(select(has("user") | not and has("domain")))) +
-            (.routing.rules | map(select(has("user") | not and (has("domain") | not))))
+            (.routing.rules | map(select( (has("user") | not) and has("domain") ))) +
+            (.routing.rules | map(select( (has("user") | not) and (has("domain") | not) )))
         )
     ' "$CONFIG_FILE" > "$tmp"; then
         mv "$tmp" "$CONFIG_FILE"
         
-        # 仅在非静默模式下重启和服务，避免在 inject_rule 中发生双重重启
+        # [Fix] 仅在非静默模式下重启和服务，避免在 inject_rule 中发生双重重启
         if [[ "$silent_mode" != "silent" ]]; then
             systemctl restart xray
             echo -e "${GREEN}排序完成！ICMP9/User 规则已强制置顶。${PLAIN}"
         fi
     else
+        # 仅在非静默模式下报错，避免 inject_rule 流程中断
         [[ "$silent_mode" != "silent" ]] && echo -e "${RED}JSON 处理失败，已回滚。${PLAIN}"
         cp "${CONFIG_FILE}.icmp9_fix.bak" "$CONFIG_FILE"
     fi
 }
 
 # ==================== 菜单 ====================
-# [Incremental Patch] Auto-Run Hook
 if [[ "$AUTO_SETUP" == "true" ]]; then
-    # 自动模式下强制执行: 录入凭证 -> 注入规则
     manual_warp_input
     inject_rule
     exit 0
@@ -408,9 +403,10 @@ while true; do
     clear
     st="${RED}未配置${PLAIN}"
     has_cred=false
-    # [Unified] 只检测标准 WARP_ 变量
+    
     if [[ -f "$CRED_FILE" ]]; then
-        if grep -q "WARP_PRIV_KEY" "$CRED_FILE" 2>/dev/null; then
+        # 兼容旧检测逻辑
+        if grep -q "WARP_PRIV_KEY" "$CRED_FILE" 2>/dev/null || grep -q "WARP_KEY" "$CRED_FILE" 2>/dev/null; then
             has_cred=true
         fi
     fi
