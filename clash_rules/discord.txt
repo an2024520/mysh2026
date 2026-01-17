@@ -1,11 +1,24 @@
 payload:
+  # 核心服务与 API
   - '+.discord.com'
+  - '+.discordapp.com'
   - '+.discord.gg'
-  - '+.discord.media'
   - '+.discord.gateway'
   - '+.discord.gift'
   - '+.discord.dev'
-  - '+.discordapp.com'
+  
+  # 媒体与内容分发 (CDN)
+  - '+.discord.media'
   - '+.discordapp.net'
   - '+.discordcdn.com'
+  
+  # 官方短链与辅助
+  - '+.dis.gd'
+  - '+.discord.co'
+  - '+.discord.design'
+  - '+.discord.new'
+  
+  # 状态监测与验证
+  - '+.discordstatus.com'
   - '+.hcaptcha.com'
+
