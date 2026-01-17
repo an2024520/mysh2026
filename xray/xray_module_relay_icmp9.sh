@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  ICMP9 中转扩展模块 (v3.92 Syntax-Fix Edition)
+#  ICMP9 中转扩展模块 (v4.0 Logic-Optimized)
 #  - 架构: 端口锚定 -> 协议自适应 -> 增量注入
 #  - 修复: 修复 v3.9 中 VMess 链接生成时的引号闭合错误
 #  - 核心: 依赖 IP 白名单直连 Cloudflare
@@ -62,6 +62,11 @@ get_user_input() {
     if [[ "$AUTO_SETUP" != "true" ]]; then
         read -p "请输入 ICMP9 KEY: " REMOTE_UUID
         read -p "请输入 Argo 域名: " ARGO_DOMAIN
+        
+        # [新增] 手动指定入口交互
+        echo -e "${SKYBLUE}>>> [可选] 手动指定入口 (若 API 失效，请输入 tunnel-na.8443.buzz)${PLAIN}"
+        read -p "入口域名 (留空自动获取): " MANUAL_HOST
+        read -p "入口端口 (默认 443): " MANUAL_PORT
     else
         REMOTE_UUID="$ICMP9_KEY"
     fi
@@ -75,11 +80,20 @@ inject_config() {
     echo -e "${YELLOW}>>> [配置] 生成配置...${PLAIN}"
     
     NODES_JSON=$(curl -s "$API_NODES")
-    RAW_CFG=$(curl -s "$API_CONFIG")
     
-    R_WSHOST=$(echo "$RAW_CFG" | grep "^wshost|" | cut -d'|' -f2 | tr -d '\r\n')
-    R_PORT=$(echo "$RAW_CFG" | grep "^port|" | cut -d'|' -f2 | tr -d '\r\n')
-    R_TLS="none"; [[ $(echo "$RAW_CFG" | grep "^tls|" | cut -d'|' -f2) == "1" ]] && R_TLS="tls"
+    # [修改] 增量逻辑：如果手动指定了 Host，则直接赋值；否则执行原有 curl 逻辑
+    if [[ -n "$MANUAL_HOST" ]]; then
+        echo -e "${GREEN}>>> 使用手动指定入口: $MANUAL_HOST${PLAIN}"
+        R_WSHOST="$MANUAL_HOST"
+        R_PORT="${MANUAL_PORT:-443}"
+        R_TLS="tls" # 手动指定时默认启用 TLS
+    else
+        RAW_CFG=$(curl -s "$API_CONFIG")
+        
+        R_WSHOST=$(echo "$RAW_CFG" | grep "^wshost|" | cut -d'|' -f2 | tr -d '\r\n')
+        R_PORT=$(echo "$RAW_CFG" | grep "^port|" | cut -d'|' -f2 | tr -d '\r\n')
+        R_TLS="none"; [[ $(echo "$RAW_CFG" | grep "^tls|" | cut -d'|' -f2) == "1" ]] && R_TLS="tls"
+    fi
 
     # 直连 wshost (CF IPv6)
     FINAL_ADDR="$R_WSHOST"
