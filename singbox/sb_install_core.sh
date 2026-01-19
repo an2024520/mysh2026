@@ -207,6 +207,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+systemctl enable sing-box
 
 # 7. 结束输出
 VER_INFO=$("$BIN_PATH" version | head -n 1)
