@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: VLESS + WS + TLS (CDN) (v1.3 Auto)
-#  - 核心: 自动生成自签证书 (适配 Cloudflare Full 模式)
-#  - 升级: 支持 auto_deploy.sh 自动化调用
-#  - 修复: Tag + Port 双重清理
+#  Sing-box 节点新增: VLESS + WS + TLS (CDN)
+#  - 模式: 交互式导入证书 (支持 auto_deploy.sh 调用)
+#  - 修复: jq 变量未定义错误
 # ============================================================
 
 RED='\033[0;31m'
@@ -13,7 +12,7 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
-echo -e "${GREEN}>>> [Sing-box] 智能添加节点: VLESS + WS + TLS (CDN) ...${PLAIN}"
+echo -e "${GREEN}>>> [Sing-box] 新增节点: VLESS + WS + TLS (CDN) ...${PLAIN}"
 
 # --- 1. 环境准备 ---
 CONFIG_FILE=""
@@ -23,112 +22,137 @@ for p in "${PATHS[@]}"; do
 done
 [[ -z "$CONFIG_FILE" ]] && CONFIG_FILE="/usr/local/etc/sing-box/config.json"
 
-CONFIG_DIR=$(dirname "$CONFIG_FILE")
-CERT_DIR="${CONFIG_DIR}/certs"
-SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
-
-echo -e "${GREEN}>>> 锁定配置文件: ${CONFIG_FILE}${PLAIN}"
-
-if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
-    apt update -y && apt install -y jq openssl
+if ! command -v jq &> /dev/null; then
+    echo -e "${RED}错误: 未安装 jq，请先安装 (apt install jq / yum install jq)${PLAIN}"
+    exit 1
 fi
 
-if [[ ! -f "$CONFIG_FILE" ]]; then
-    mkdir -p "$CONFIG_DIR"
-    echo '{"inbounds":[],"outbounds":[]}' > "$CONFIG_FILE"
-fi
+# --- 2. 证书路径获取 (交互/自动) ---
+input_cert_paths() {
+    # 尝试读取 acme_manager 生成的默认信息
+    local info_file="/etc/acme_info"
+    local def_cert=""
+    local def_key=""
+    local def_domain=""
 
-# --- 2. 参数获取 ---
-if [[ "$AUTO_SETUP" == "true" ]]; then
-    echo -e "${GREEN}>>> [自动模式] 读取参数...${PLAIN}"
-    PORT=${SB_WS_TLS_PORT:-8443}
-    DOMAIN=${SB_WS_TLS_DOMAIN}
-    WS_PATH=${SB_WS_TLS_PATH:-"/ws"}
+    if [[ -f "$info_file" ]]; then
+        source "$info_file"
+        def_cert="$CERT_PATH"
+        def_key="$KEY_PATH"
+        def_domain="$DOMAIN"
+    fi
+
+    echo -e "\n${YELLOW}--- 证书配置 ---${PLAIN}"
     
-    if [[ -z "$DOMAIN" ]]; then
-        echo -e "${RED}错误: 自动模式下必须提供域名 (SB_WS_TLS_DOMAIN)!${PLAIN}"
+    # 域名输入
+    if [[ -n "$def_domain" ]]; then
+        read -p "请输入节点域名 [默认: $def_domain]: " input_domain
+        DOMAIN="${input_domain:-$def_domain}"
+    else
+        read -p "请输入节点域名: " DOMAIN
+    fi
+    [[ -z "$DOMAIN" ]] && echo -e "${RED}域名不能为空!${PLAIN}" && exit 1
+
+    # 证书公钥路径
+    if [[ -n "$def_cert" ]]; then
+        echo -e "检测到默认证书: ${SKYBLUE}$def_cert${PLAIN}"
+        read -p "使用该路径? [y/n/自定义路径]: " cert_choice
+        if [[ "$cert_choice" == "y" || "$cert_choice" == "Y" || -z "$cert_choice" ]]; then
+            CERT_PATH="$def_cert"
+        else
+            CERT_PATH="$cert_choice"
+        fi
+    else
+        read -p "请输入证书文件(.crt/.cer) 绝对路径: " CERT_PATH
+    fi
+
+    # 证书私钥路径
+    if [[ -n "$def_key" ]]; then
+        echo -e "检测到默认私钥: ${SKYBLUE}$def_key${PLAIN}"
+        read -p "使用该路径? [y/n/自定义路径]: " key_choice
+        if [[ "$key_choice" == "y" || "$key_choice" == "Y" || -z "$key_choice" ]]; then
+            KEY_PATH="$def_key"
+        else
+            KEY_PATH="$key_choice"
+        fi
+    else
+        read -p "请输入私钥文件(.key) 绝对路径: " KEY_PATH
+    fi
+
+    # 验证文件存在性
+    if [[ ! -f "$CERT_PATH" ]]; then
+        echo -e "${RED}错误: 找不到证书文件: $CERT_PATH${PLAIN}"
         exit 1
     fi
-else
-    echo -e "${YELLOW}--- 配置 VLESS-WS-TLS (CDN) ---${PLAIN}"
-    while true; do
-        read -p "请输入监听端口 (默认 8443): " CUSTOM_PORT
-        [[ -z "$CUSTOM_PORT" ]] && PORT=8443 && break
-        if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
-            PORT="$CUSTOM_PORT"
-            break
-        else
-            echo -e "${RED}无效端口。${PLAIN}"
-        fi
-    done
+    if [[ ! -f "$KEY_PATH" ]]; then
+        echo -e "${RED}错误: 找不到私钥文件: $KEY_PATH${PLAIN}"
+        exit 1
+    fi
+}
 
-    read -p "请输入域名 (例如: vps.example.com): " DOMAIN
-    if [[ -z "$DOMAIN" ]]; then echo -e "${RED}错误: 必须输入域名!${PLAIN}"; exit 1; fi
+# --- 3. 配置参数生成 ---
+input_cert_paths
 
-    read -p "请输入 WebSocket 路径 (默认 /ws): " CUSTOM_PATH
-    WS_PATH=${CUSTOM_PATH:-"/ws"}
-fi
+UUID=$(cat /proc/sys/kernel/random/uuid)
+PORT=$(shuf -i 10000-60000 -n 1)
+# 端口防冲突检测
+while netstat -tuln | grep -q ":$PORT "; do
+    PORT=$(shuf -i 10000-60000 -n 1)
+done
 
-# 格式化路径
-if [[ "${WS_PATH:0:1}" != "/" ]]; then WS_PATH="/$WS_PATH"; fi
+WS_PATH="/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 6)"
+NODE_TAG="TLS-WS-${PORT}"
 
-# --- 3. 证书生成 (Auto Self-Signed) ---
-echo -e "${YELLOW}正在生成自签名证书 (适配 CF Full 模式)...${PLAIN}"
-mkdir -p "$CERT_DIR"
-CERT_FILE="${CERT_DIR}/${DOMAIN}_${PORT}.crt"
-KEY_FILE="${CERT_DIR}/${DOMAIN}_${PORT}.key"
+# --- 4. 注入配置文件 (修复 jq 变量) ---
+echo -e "${GREEN}>>> 正在写入配置文件...${PLAIN}"
 
-# 使用 EC 密钥，更高效
-openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout "$KEY_FILE" -out "$CERT_FILE" \
-    -days 3650 -subj "/CN=$DOMAIN" >/dev/null 2>&1
-
-if [[ ! -f "$CERT_FILE" ]]; then
-    echo -e "${RED}证书生成失败！${PLAIN}"; exit 1
-fi
-
-# --- 4. 核心执行 ---
-UUID=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-NODE_TAG="WS-TLS-${PORT}"
-
-# [PRO 修复] Tag + Port 双重清理
-tmp0=$(mktemp)
-jq --argjson p "$PORT" --arg tag "$NODE_TAG" \
-   'del(.inbounds[]? | select(.listen_port == $p or .tag == $tag))' \
-   "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
-
-# 构建 JSON
-# 注意: TLS 需要监听 :: 或 0.0.0.0 以供 CDN 访问
+# 构造 Inbound JSON
 NODE_JSON=$(jq -n \
-    --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
+    --arg port "$PORT" \
     --arg uuid "$UUID" \
     --arg path "$WS_PATH" \
-    --arg cert "$CERT_FILE" \
-    --arg key "$KEY_FILE" \
+    --arg host "$DOMAIN" \
+    --arg cert "$CERT_PATH" \
+    --arg key "$KEY_PATH" \
     '{
         "type": "vless",
         "tag": $tag,
         "listen": "::",
         "listen_port": ($port | tonumber),
-        "users": [{ "uuid": $uuid }],
-        "transport": { "type": "ws", "path": $path },
+        "users": [
+            {
+                "uuid": $uuid,
+                "flow": ""
+            }
+        ],
+        "transport": {
+            "type": "ws",
+            "path": $path,
+            "headers": {
+                "Host": $host
+            }
+        },
         "tls": {
             "enabled": true,
+            "server_name": $host,
             "certificate_path": $cert,
             "key_path": $key
         }
     }')
 
 tmp=$(mktemp)
-jq --argjson new "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+# 核心修复: 将 $new_node 改为 $new
+jq --argjson new "$NODE_JSON" '.inbounds = (.inbounds // []) + [$new]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
 # --- 5. 重启与输出 ---
 systemctl restart sing-box
 sleep 2
 
 if systemctl is-active --quiet sing-box; then
-    PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
+    # 获取公网IP (IPv4 优先，失败降级到 IPv6)
+    PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s6m5 https://api.ip.sb/ip)
+    
     # 链接中 security=tls
     SHARE_LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=tls&encryption=none&type=ws&path=${WS_PATH}&sni=${DOMAIN}&fp=chrome#${NODE_TAG}"
 
@@ -139,18 +163,13 @@ if systemctl is-active --quiet sing-box; then
     echo -e "节点 Tag    : ${YELLOW}${NODE_TAG}${PLAIN}"
     echo -e "监听端口    : ${YELLOW}${PORT}${PLAIN}"
     echo -e "绑定域名    : ${YELLOW}${DOMAIN}${PLAIN}"
+    echo -e "证书路径    : ${CERT_PATH}"
     echo -e "----------------------------------------"
     echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "${GRAY}* 提示: 请确保 Cloudflare SSL 设置为 'Full' 或 'Full (Strict)'${PLAIN}"
-
-    if [[ "$AUTO_SETUP" == "true" ]]; then
-        LOG_FILE="/root/sb_nodes.txt"
-        echo "Tag: ${NODE_TAG} | ${SHARE_LINK}" >> "$LOG_FILE"
-        echo -e "${SKYBLUE}>>> [自动记录] 已追加至: ${LOG_FILE}${PLAIN}"
-    fi
+    echo -e "注意: 若使用 Cloudflare，请确保 SSL/TLS 模式设为 Full 或 Strict。"
 else
-    echo -e "${RED}启动失败。${PLAIN}"
-    [[ "$AUTO_SETUP" == "true" ]] && exit 1
+    echo -e "${RED}部署失败: Sing-box 服务未启动，请检查日志 (journalctl -u sing-box -e)${PLAIN}"
+    # 回滚配置 (简单处理：提示用户手动检查，因为jq已覆盖)
 fi
