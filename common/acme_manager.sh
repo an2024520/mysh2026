@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  ACME 证书管理脚本 (适配低配 VPS)
-#  功能: 申请/续签/管理证书 + 导出路径信息
+#  ACME 证书管理脚本 v1.1
+#  - 新增: 卸载/清理功能
+#  - 优化: 菜单化操作
 # ============================================================
 
 RED='\033[0;31m'
@@ -17,7 +18,7 @@ check_root() {
 }
 
 install_deps() {
-    echo -e "${GREEN}>>> 检查并安装依赖 (socat, curl, cron)...${PLAIN}"
+    # 仅在安装模式下检查依赖
     if [[ -n $(command -v apt-get) ]]; then
         apt-get update -y && apt-get install -y socat curl cron
     elif [[ -n $(command -v yum) ]]; then
@@ -26,22 +27,25 @@ install_deps() {
     fi
 }
 
-install_acme() {
-    if ! command -v acme.sh &> /dev/null; then
+install_acme_core() {
+    if ! command -v acme.sh &> /dev/null && [[ ! -f ~/.acme.sh/acme.sh ]]; then
         echo -e "${GREEN}>>> 安装 acme.sh...${PLAIN}"
         read -p "请输入注册邮箱 (可随意填写): " ACME_EMAIL
         [[ -z "$ACME_EMAIL" ]] && ACME_EMAIL="cert@example.com"
         curl https://get.acme.sh | sh -s email="$ACME_EMAIL"
         source ~/.bashrc
     else
-        echo -e "${YELLOW}>>> acme.sh 已安装，跳过安装步骤。${PLAIN}"
+        echo -e "${YELLOW}>>> acme.sh 已安装，跳过核心安装。${PLAIN}"
     fi
 }
 
 issue_cert() {
+    install_deps
+    install_acme_core
+    
     echo -e "\n${GREEN}>>> 请选择证书申请模式:${PLAIN}"
-    echo -e "  1. HTTP 模式 (需要占用 80 端口，适合无 CDN 环境)"
-    echo -e "  2. DNS 模式 (Cloudflare API，适合纯 IPv6 或开启 CDN 环境)"
+    echo -e "  1. HTTP 模式 (占用 80 端口，适合无 CDN)"
+    echo -e "  2. DNS 模式 (Cloudflare API，适合 IPv6/CDN)"
     read -p "请选择 [1-2]: " MODE
 
     read -p "请输入申请证书的域名: " DOMAIN
@@ -51,24 +55,17 @@ issue_cert() {
 
     case "$MODE" in
         1)
-            # HTTP Mode
             if lsof -i :80 &> /dev/null; then
-                echo -e "${RED}警告: 80 端口被占用，请先停止占用 80 端口的服务 (如 Nginx)。${PLAIN}"
+                echo -e "${RED}警告: 80 端口被占用，请先停止 Nginx/Apache。${PLAIN}"
                 exit 1
             fi
-            echo -e "${GREEN}>>> 开始申请证书 (HTTP Standalone)...${PLAIN}"
             ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone -k ec-256 --force
             ;;
         2)
-            # DNS Mode (Cloudflare)
-            echo -e "${YELLOW}提示: 请准备好 Cloudflare API Token (需有 Zone.DNS 编辑权限)${PLAIN}"
-            read -p "请输入 Cloudflare API Token: " CF_TOKEN
-            if [[ -z "$CF_TOKEN" ]]; then
-                echo -e "${RED}Token 不能为空！${PLAIN}"
-                exit 1
-            fi
+            echo -e "${YELLOW}提示: 需 Cloudflare API Token (Zone.DNS Edit 权限)${PLAIN}"
+            read -p "请输入 Token: " CF_TOKEN
+            [[ -z "$CF_TOKEN" ]] && echo -e "${RED}Token 不能为空！${PLAIN}" && exit 1
             export CF_Token="$CF_TOKEN"
-            echo -e "${GREEN}>>> 开始申请证书 (DNS Cloudflare)...${PLAIN}"
             ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$DOMAIN" -k ec-256 --force
             ;;
         *)
@@ -76,34 +73,63 @@ issue_cert() {
             ;;
     esac
 
-    if [[ $? -ne 0 ]]; then
-        echo -e "${RED}>>> 证书申请失败，请检查报错信息。${PLAIN}"
-        exit 1
+    if [[ $? -eq 0 ]]; then
+        ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
+            --fullchain-file "/root/cert/${DOMAIN}/fullchain.crt" \
+            --key-file       "/root/cert/${DOMAIN}/private.key" \
+            --reloadcmd      "echo 'Cert updated'"
+
+        echo "CERT_PATH=\"/root/cert/${DOMAIN}/fullchain.crt\"" > "$INFO_FILE"
+        echo "KEY_PATH=\"/root/cert/${DOMAIN}/private.key\"" >> "$INFO_FILE"
+        echo "DOMAIN=\"${DOMAIN}\"" >> "$INFO_FILE"
+        
+        echo -e "${GREEN}>>> 证书申请成功！路径已记录至 $INFO_FILE${PLAIN}"
+    else
+        echo -e "${RED}>>> 申请失败。${PLAIN}"
+    fi
+}
+
+uninstall_acme() {
+    echo -e "\n${RED}>>> [危险] 正在执行卸载程序...${PLAIN}"
+    read -p "确定要彻底移除 acme.sh 及其定时任务吗? [y/N]: " CONFIRM
+    [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]] && echo "操作取消" && exit 0
+
+    # 1. 调用官方卸载 (清理 cron 和 alias)
+    if [[ -f ~/.acme.sh/acme.sh ]]; then
+        ~/.acme.sh/acme.sh --uninstall
     fi
 
-    # 安装证书到指定目录
-    echo -e "${GREEN}>>> 安装证书到 /root/cert/${DOMAIN} ...${PLAIN}"
-    ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
-        --fullchain-file "/root/cert/${DOMAIN}/fullchain.crt" \
-        --key-file       "/root/cert/${DOMAIN}/private.key" \
-        --reloadcmd      "echo 'Cert updated'"
+    # 2. 物理删除残留
+    rm -rf ~/.acme.sh
+    rm -f "$INFO_FILE"
 
-    # 导出路径信息
-    echo "CERT_PATH=\"/root/cert/${DOMAIN}/fullchain.crt\"" > "$INFO_FILE"
-    echo "KEY_PATH=\"/root/cert/${DOMAIN}/private.key\"" >> "$INFO_FILE"
-    echo "DOMAIN=\"${DOMAIN}\"" >> "$INFO_FILE"
+    echo -e "${GREEN}>>> acme.sh 核心文件及配置已清理。${PLAIN}"
 
-    echo -e "\n${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}  证书申请与安装成功！${PLAIN}"
-    echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "公钥路径: /root/cert/${DOMAIN}/fullchain.crt"
-    echo -e "私钥路径: /root/cert/${DOMAIN}/private.key"
-    echo -e "路径信息已保存至: ${YELLOW}${INFO_FILE}${PLAIN}"
-    echo -e "acme.sh 已配置自动续期。"
+    # 3. 询问是否删除证书文件
+    read -p "是否删除已申请的证书文件 (/root/cert/)? [y/N]: " DEL_CERT
+    if [[ "$DEL_CERT" == "y" || "$DEL_CERT" == "Y" ]]; then
+        rm -rf /root/cert
+        echo -e "${GREEN}>>> 证书文件已删除。${PLAIN}"
+    else
+        echo -e "${YELLOW}>>> 证书文件已保留在 /root/cert/ 。${PLAIN}"
+    fi
+}
+
+show_menu() {
+    echo -e "\n${GREEN}=== ACME 证书管理器 v1.1 ===${PLAIN}"
+    echo -e "  1. 申请/续签证书 (安装)"
+    echo -e "  2. 卸载 acme.sh (清理)"
+    echo -e "  0. 退出"
+    echo -e "------------------------"
+    read -p "请选择: " OPT
+    case "$OPT" in
+        1) issue_cert ;;
+        2) uninstall_acme ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}无效选项${PLAIN}" ;;
+    esac
 }
 
 # Main
 check_root
-install_deps
-install_acme
-issue_cert
+show_menu
