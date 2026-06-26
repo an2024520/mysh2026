@@ -49,7 +49,7 @@ mkdir -p "$CERT_DIR"
 if [[ "$AUTO_SETUP" == "true" ]]; then
     if [[ -z "$DOMAIN_INPUT" ]]; then
         MODE="self"
-        DOMAIN="www.microsoft.com"
+        DOMAIN="www.apple.com"
         echo -e "${GREEN}>>> [自动模式] 域名为空，使用自签模式 (Self-Signed)${PLAIN}"
     else
         MODE="acme"
