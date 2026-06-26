@@ -73,7 +73,7 @@ else
 
     if [[ -z "$DOMAIN_INPUT" ]]; then
         MODE="self"
-        DOMAIN="www.microsoft.com"
+        DOMAIN="www.apple.com"
         echo -e "${GREEN}>>> 已选择: 自签证书模式 (Self-Signed)${PLAIN}"
     else
         MODE="acme"
